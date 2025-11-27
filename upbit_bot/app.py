@@ -174,7 +174,8 @@ class TradingBot:
                 logger.warning("가용 원화가 부족해 주문을 건너뜁니다. 보유: %.0f", available_krw)
                 return 0.0
             strength = max(decision.score, 0.0) / 100.0
-            weight = 0.05 + (0.25 - 0.05) * strength  # 5~25% 비중 배정
+            quality_factor = 0.5 if decision.quality < -15 else 0.75 if decision.quality < -5 else 1.0
+            weight = (0.05 + (0.25 - 0.05) * strength) * quality_factor  # 5~25% 비중 배정, 품질 낮을수록 축소
             order_amount = min(available_krw, max(min_order_amount, available_krw * weight))
             return order_amount / decision.price
 
@@ -183,7 +184,8 @@ class TradingBot:
         if available_volume <= 0:
             logger.warning("보유 물량이 없어 매도 주문을 건너뜁니다: %s", decision.market)
             return 0.0
-        sell_fraction = min(1.0, abs(decision.score) / 70)  # 신호 강도에 따라 최대 전량
+        quality_factor = 0.6 if decision.quality < -15 else 0.8 if decision.quality < -5 else 1.0
+        sell_fraction = min(1.0, (abs(decision.score) / 70) * quality_factor)  # 신호 강도에 따라 최대 전량
         return max(0.0, available_volume * sell_fraction)
 
     def _apply_simulated_fill(self, decision: Decision, volume: float) -> None:

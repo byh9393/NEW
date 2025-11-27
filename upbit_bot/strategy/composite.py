@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from time import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -42,6 +43,7 @@ class Decision:
     score: float
     signal: Signal
     reason: str
+    quality: float = 0.0
 
 
 def _trend_component(prices: pd.Series) -> Tuple[float, str]:
@@ -122,6 +124,38 @@ def _quality_filter(prices: pd.Series) -> Tuple[float, str]:
     return float(quality), f"시장 품질 {regime} (Chop {latest_chop:.2f})"
 
 
+_risk_state: Dict[str, Dict[str, float]] = {}
+
+
+def _cooldown_check(market: str, prices: pd.Series) -> Tuple[bool, str, float]:
+    """최근 손실/드로다운 흐름을 기반으로 거래를 일시 중단한다."""
+
+    state = _risk_state.setdefault(market, {"cooldown_until": 0.0})
+    now = time()
+
+    returns = prices.pct_change().dropna().tail(6)
+    loss_streak = 0
+    for r in reversed(returns.tolist()):
+        if r < 0:
+            loss_streak += 1
+        else:
+            break
+
+    recent_peak = prices.rolling(window=min(90, prices.size)).max().iloc[-1]
+    drawdown = (prices.iloc[-1] - recent_peak) / (recent_peak + 1e-9)
+
+    cooldown_reason = ""
+    if loss_streak >= 3:
+        state["cooldown_until"] = max(state["cooldown_until"], now + 180)
+        cooldown_reason = f"최근 {loss_streak}연속 손실"
+    if drawdown <= -0.05:
+        state["cooldown_until"] = max(state["cooldown_until"], now + 300)
+        cooldown_reason = (cooldown_reason + " / " if cooldown_reason else "") + "단기 드로다운 -5% 이하"
+
+    active = now < state.get("cooldown_until", 0)
+    return active, cooldown_reason, drawdown
+
+
 def _aggregate_factors(prices: pd.Series) -> Tuple[float, List[str], Dict[str, float]]:
     components = {
         "trend": _trend_component(prices),
@@ -152,27 +186,75 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
     - 시스템 트레이더가 선호하는 필터링: 장기 하락 추세에서는 매수 한도를 낮춤
     """
     if prices.empty or prices.size < 60:
-        return Decision(market, 0.0, 0.0, Signal.HOLD, "데이터 부족")
+        return Decision(market, 0.0, 0.0, Signal.HOLD, "데이터 부족", 0.0)
 
     score, reasons, raw_scores = _aggregate_factors(prices)
     latest_price = float(prices.iloc[-1])
 
-    # 장기 하락 추세 및 시장 품질에 따른 필터 강화
+    # 장기 하락 추세 및 시장 품질에 따른 필터 강화 + 거래비용 보정
     trend_score = raw_scores.get("trend", 0.0)
     quality_score = raw_scores.get("quality", 0.0)
-    effective_buy = buy_threshold + (6 if trend_score < 0 else 0) + (4 if quality_score < -10 else 0)
-    effective_sell = sell_threshold - (5 if trend_score < -25 else 0)
+    atr = float(np.nan_to_num(prices.diff().abs().rolling(window=14).mean().iloc[-1]))
+    atr_ratio = atr / (latest_price + 1e-9)
+    fee_rate = 0.0005
+    slippage_est = min(0.002, atr_ratio * 1.6)
+    cost_buffer = (fee_rate + slippage_est) * 140  # 점수 스케일로 변환
+    volatility_buffer = np.clip(atr_ratio * 120, 0, 10)
 
-    if score >= effective_buy:
+    effective_buy = (
+        buy_threshold
+        + (6 if trend_score < 0 else 0)
+        + (4 if quality_score < -10 else 0)
+        + cost_buffer
+        + volatility_buffer
+    )
+    effective_sell = (
+        sell_threshold
+        - (5 if trend_score < -25 else 0)
+        - (cost_buffer * 0.6)
+        - (volatility_buffer * 0.5)
+    )
+
+    # 손절/익절/트레일링 스탑 탐지 (ATR·볼린저 기반)
+    bb = bollinger_bands(prices)
+    bb_upper, bb_middle, bb_lower = bb.iloc[-1]["upper"], bb.iloc[-1]["middle"], bb.iloc[-1]["lower"]
+    trailing_peak = prices.rolling(window=min(60, prices.size)).max().iloc[-1]
+    trailing_drawdown = (latest_price - trailing_peak) / (trailing_peak + 1e-9)
+
+    stop_reason: Optional[str] = None
+    if latest_price < bb_lower or latest_price < bb_middle - 1.5 * atr:
+        stop_reason = "볼린저 하단/ATR 손절 발동"
+    elif latest_price > bb_upper and score < effective_buy:
+        stop_reason = "볼린저 상단 도달 후 익절/청산"
+    elif trailing_drawdown <= -0.035:
+        stop_reason = "트레일링 스탑: 최근 고점 대비 3.5% 하락"
+
+    # 연속 손실/드로다운 기반 쿨다운 확인
+    cooldown_active, cooldown_reason, drawdown = _cooldown_check(market, prices)
+
+    if stop_reason:
+        signal = Signal.SELL
+        reason = f"리스크 종료 신호: {stop_reason}"
+    elif cooldown_active:
+        signal = Signal.HOLD
+        reason = f"쿨다운: {cooldown_reason or f'DD {drawdown*100:.1f}%'}"
+    elif score >= effective_buy:
         signal = Signal.BUY
-        reason = f"복합점수 {score:.1f} ≥ 매수 임계 {effective_buy} | " + "; ".join(reasons[:2])
+        reason = f"복합점수 {score:.1f} ≥ 매수 임계 {effective_buy:.1f} | " + "; ".join(reasons[:2])
     elif score <= effective_sell:
         signal = Signal.SELL
-        reason = f"복합점수 {score:.1f} ≤ 매도 임계 {effective_sell} | " + "; ".join(reasons[:2])
+        reason = f"복합점수 {score:.1f} ≤ 매도 임계 {effective_sell:.1f} | " + "; ".join(reasons[:2])
     else:
         signal = Signal.HOLD
         reason = "중립 영역 | " + "; ".join(reasons[:2])
 
-    decision = Decision(market=market, price=latest_price, score=score, signal=signal, reason=reason)
+    decision = Decision(
+        market=market,
+        price=latest_price,
+        score=score,
+        signal=signal,
+        reason=reason,
+        quality=quality_score,
+    )
     logger.debug("%s 신호: %s", market, decision)
     return decision
