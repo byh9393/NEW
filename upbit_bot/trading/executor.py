@@ -24,6 +24,9 @@ class OrderResult:
     volume: float
     price: float
     raw: dict
+    fee: float
+    net_amount: float
+    fee_rate: float
     error: Optional[str] = None
 
 
@@ -54,13 +57,27 @@ def place_order(
     volume: float,
     price: Optional[float] = None,
     simulated: bool = True,
+    fee_rate: float = 0.0005,
 ) -> OrderResult:
     """
     업비트 주문 API 호출 혹은 모의주문 수행.
     """
     logger.info("주문 요청: %s %s %.4f @ %s (simulated=%s)", side, market, volume, price, simulated)
+    amount = (price or 0.0) * volume
+    fee = amount * fee_rate
+    net_amount = amount - fee
     if simulated:
-        return OrderResult(True, side, market, volume, price or 0.0, raw={"simulated": True})
+        return OrderResult(
+            True,
+            side,
+            market,
+            volume,
+            price or 0.0,
+            raw={"simulated": True},
+            fee=fee,
+            net_amount=net_amount,
+            fee_rate=fee_rate,
+        )
 
     url = "https://api.upbit.com/v1/orders"
     body = {"market": market, "side": side, "volume": str(volume), "ord_type": "limit"}
@@ -73,6 +90,27 @@ def place_order(
     response = requests.post(url, json=body, headers=headers, timeout=10)
     if not response.ok:
         logger.error("주문 실패: %s", response.text)
-        return OrderResult(False, side, market, volume, price or 0.0, raw={}, error=response.text)
+        return OrderResult(
+            False,
+            side,
+            market,
+            volume,
+            price or 0.0,
+            raw={},
+            fee=fee,
+            net_amount=net_amount,
+            fee_rate=fee_rate,
+            error=response.text,
+        )
 
-    return OrderResult(True, side, market, volume, price or 0.0, raw=response.json())
+    return OrderResult(
+        True,
+        side,
+        market,
+        volume,
+        price or 0.0,
+        raw=response.json(),
+        fee=fee,
+        net_amount=net_amount,
+        fee_rate=fee_rate,
+    )
