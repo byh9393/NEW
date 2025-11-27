@@ -49,6 +49,7 @@ class TradingBot:
         use_ai: bool = True,
         openai_model: str = "gpt-4o-mini",
         on_update: Optional[Callable[[DecisionUpdate], None]] = None,
+        fee_rate: float = 0.0005,
     ) -> None:
         self.markets: List[str] = list(markets)
         self.price_buffer = PriceBuffer(maxlen=maxlen)
@@ -65,6 +66,7 @@ class TradingBot:
         self._last_account_refresh = 0.0
         self._access = os.environ.get("UPBIT_ACCESS_KEY", "")
         self._secret = os.environ.get("UPBIT_SECRET_KEY", "")
+        self.fee_rate = fee_rate
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -143,6 +145,9 @@ class TradingBot:
                 0.0,
                 decision.price,
                 raw={},
+                fee=0.0,
+                net_amount=0.0,
+                fee_rate=self.fee_rate,
                 error="주문 조건 불충족",
             )
 
@@ -154,10 +159,11 @@ class TradingBot:
             volume=volume,
             price=decision.price,
             simulated=self.simulated or not self._access or not self._secret,
+            fee_rate=self.fee_rate,
         )
 
         if result.success and (self.simulated or not self._access or not self._secret):
-            self._apply_simulated_fill(decision, volume)
+            self._apply_simulated_fill(decision, volume, fee_rate=self.fee_rate)
 
         return result
 
@@ -167,15 +173,23 @@ class TradingBot:
     def _calculate_volume(self, decision: Decision) -> float:
         snapshot = self.account_snapshot or AccountSnapshot(krw_balance=self.krw_balance, holdings=[], total_value=self.krw_balance)
         min_order_amount = 10000.0
+        fee_rate = self.fee_rate
 
         if decision.signal == Signal.BUY:
             available_krw = snapshot.krw_balance if snapshot else self.krw_balance
             if available_krw < min_order_amount:
                 logger.warning("가용 원화가 부족해 주문을 건너뜁니다. 보유: %.0f", available_krw)
                 return 0.0
+            min_required_amount = min_order_amount / (1 - fee_rate)
+            max_affordable_amount = available_krw / (1 + fee_rate)
+            if max_affordable_amount < min_required_amount:
+                logger.warning("수수료를 고려하면 최소 주문금액을 충족할 수 없습니다. 보유: %.0f", available_krw)
+                return 0.0
             strength = max(decision.score, 0.0) / 100.0
             weight = 0.05 + (0.25 - 0.05) * strength  # 5~25% 비중 배정
-            order_amount = min(available_krw, max(min_order_amount, available_krw * weight))
+            base_amount = max(min_order_amount, available_krw * weight)
+            adjusted_amount = max(min_required_amount, base_amount)
+            order_amount = min(max_affordable_amount, adjusted_amount)
             return order_amount / decision.price
 
         holdings = {h.market: h.balance for h in snapshot.holdings} if snapshot else self.positions
@@ -184,20 +198,31 @@ class TradingBot:
             logger.warning("보유 물량이 없어 매도 주문을 건너뜁니다: %s", decision.market)
             return 0.0
         sell_fraction = min(1.0, abs(decision.score) / 70)  # 신호 강도에 따라 최대 전량
-        return max(0.0, available_volume * sell_fraction)
+        planned_volume = max(0.0, available_volume * sell_fraction)
+        min_sell_volume = min_order_amount / (decision.price * (1 - fee_rate))
+        if available_volume * decision.price * (1 - fee_rate) < min_order_amount:
+            logger.warning("수수료를 고려하면 최소 주문금액을 충족할 수 없습니다: %s", decision.market)
+            return 0.0
+        if planned_volume * decision.price * (1 - fee_rate) < min_order_amount:
+            planned_volume = min(available_volume, min_sell_volume)
+        return planned_volume
 
-    def _apply_simulated_fill(self, decision: Decision, volume: float) -> None:
+    def _apply_simulated_fill(self, decision: Decision, volume: float, *, fee_rate: float) -> None:
         amount = volume * decision.price
+        fee = amount * fee_rate
         if decision.signal == Signal.BUY:
-            self.krw_balance -= amount
+            acquired_volume = volume * (1 - fee_rate)
+            total_cost = amount + fee
+            self.krw_balance -= total_cost
             prev_volume = self.positions.get(decision.market, 0.0)
             prev_value = self.avg_price.get(decision.market, 0.0) * prev_volume
-            new_volume = prev_volume + volume
-            avg_price = (prev_value + amount) / new_volume if new_volume else decision.price
+            new_volume = prev_volume + acquired_volume
+            avg_price = (prev_value + total_cost) / new_volume if new_volume else decision.price
             self.positions[decision.market] = new_volume
             self.avg_price[decision.market] = avg_price
         else:
-            self.krw_balance += amount
+            proceeds = amount - fee
+            self.krw_balance += proceeds
             prev_volume = self.positions.get(decision.market, 0.0)
             remaining = max(0.0, prev_volume - volume)
             if remaining == 0:

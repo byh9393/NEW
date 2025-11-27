@@ -28,6 +28,11 @@ PySide6 기반 카드형 그리드 대시보드를 통해 Tkinter GUI에서 제�
 python -m upbit_bot.ui.desktop
 ```
 
+PySide6 기반 카드형 그리드 UI 데스크톱 대시보드를 이용해 컬럼 정렬·필터·검색, 다크/라이트 테마 전환, 주문·에러 알림 배너, 즐겨찾기 핀, 계좌/차트/로그를 한 화면에서 확인할 수 있습니다.
+```bash
+python -m upbit_bot.ui.desktop
+```
+
 ## 환경 변수 및 .env 설정
 - 프로젝트 루트의 `.env` 파일에 아래 키를 입력하면 패키지 초기화 시 자동으로 불러옵니다.
   ```env
