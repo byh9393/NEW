@@ -21,7 +21,14 @@ pip install -r requirements.txt
 python -m upbit_bot.app
 ```
 
-## 환경 변수
+
+## 환경 변수 및 .env 설정
+- 프로젝트 루트의 `.env` 파일에 아래 키를 입력하면 패키지 초기화 시 자동으로 불러옵니다.
+  ```env
+  OPENAI_API_KEY=your-openai-api-key
+  UPBIT_ACCESS_KEY=your-upbit-access-key
+  UPBIT_SECRET_KEY=your-upbit-secret-key
+  ```
 - `OPENAI_API_KEY`: OpenAI 모델 호출에 사용. 설정되어 있으면 LLM이 기본 기술적 판단을 보강합니다.
 - `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`: 실거래 주문용 업비트 API 키. 둘 다 없으면 모의주문으로 실행합니다.
 
