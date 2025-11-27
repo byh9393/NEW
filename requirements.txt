@@ -1,0 +1,7 @@
+requests
+pandas
+numpy
+websockets
+openai
+python-dotenv
+matplotlib
