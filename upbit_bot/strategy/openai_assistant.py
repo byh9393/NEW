@@ -18,7 +18,9 @@ from openai import OpenAI
 from upbit_bot.indicators.technical import (
     bollinger_bands,
     ema,
+    keltner_channel,
     macd,
+    percent_b,
     rate_of_change,
     rsi,
     stochastic_oscillator,
@@ -38,6 +40,7 @@ class AIDecision:
 def _format_metrics(prices: pd.Series) -> dict:
     macd_df = macd(prices)
     bb = bollinger_bands(prices)
+    kc = keltner_channel(prices)
     rsi_series = rsi(prices)
     stoch = stochastic_oscillator(prices)
     fast = ema(prices, 20)
@@ -49,6 +52,15 @@ def _format_metrics(prices: pd.Series) -> dict:
     roc_24 = rate_of_change(prices, period=24).iloc[-1]
     z_val = zscore(prices).iloc[-1]
     bandwidth = (bb["upper"].iloc[-1] - bb["lower"].iloc[-1]) / (bb["middle"].iloc[-1] + 1e-9)
+    pb = percent_b(prices).iloc[-1]
+    kc_width = (kc["upper"].iloc[-1] - kc["lower"].iloc[-1]) / (kc["middle"].iloc[-1] + 1e-9)
+    squeeze_on = (bb["upper"].iloc[-1] - bb["lower"].iloc[-1]) < (kc["upper"].iloc[-1] - kc["lower"].iloc[-1]) * 0.9
+    window = 60 if prices.size >= 60 else max(30, prices.size)
+    roll_max = prices.rolling(window=window).max()
+    roll_min = prices.rolling(window=window).min()
+    tr = roll_max - roll_min
+    sum_abs = prices.diff().abs().rolling(window=window).sum()
+    choppiness = float((sum_abs / (tr + 1e-9)).iloc[-1]) if prices.size else 0.0
 
     return {
         "latest_price": float(prices.iloc[-1]),
@@ -60,6 +72,7 @@ def _format_metrics(prices: pd.Series) -> dict:
         "bb_lower": float(bb["lower"].iloc[-1]),
         "bb_middle": float(bb["middle"].iloc[-1]),
         "bb_bandwidth": float(bandwidth),
+        "bb_percent_b": float(pb),
         "ema_fast": float(fast.iloc[-1]),
         "ema_slow": float(slow.iloc[-1]),
         "ema_long": float(long.iloc[-1]),
@@ -68,6 +81,9 @@ def _format_metrics(prices: pd.Series) -> dict:
         "roc_24": float(roc_24),
         "zscore": float(z_val),
         "volatility_5m": float(vol_5m),
+        "kc_width": float(kc_width),
+        "squeeze_on": bool(squeeze_on),
+        "choppiness": float(choppiness),
     }
 
 
@@ -84,17 +100,20 @@ def _build_prompt(market: str, prices: pd.Series, base: Decision, metrics: dict)
         f"- RSI: {metrics['rsi']:.2f}",
         f"- Stochastic %K/%D: {metrics['stoch_k']:.2f} / {metrics['stoch_d']:.2f}",
         f"- ROC(24틱 %): {metrics['roc_24']:.2f}",
-        f"- 볼린저 밴드: 상단 {metrics['bb_upper']:.2f}, 중단 {metrics['bb_middle']:.2f}, 하단 {metrics['bb_lower']:.2f}, 밴드폭 {metrics['bb_bandwidth']:.4f}",
+        f"- 볼린저 밴드: 상단 {metrics['bb_upper']:.2f}, 중단 {metrics['bb_middle']:.2f}, 하단 {metrics['bb_lower']:.2f}, 밴드폭 {metrics['bb_bandwidth']:.4f}, %B {metrics['bb_percent_b']:.3f}",
+        f"- Keltner 폭: {metrics['kc_width']:.4f}, Squeeze: {metrics['squeeze_on']}",
         f"- Z-Score: {metrics['zscore']:.3f}",
         f"- 5분 변동성(표준편차, %): {metrics['volatility_5m']:.3f}",
+        f"- 시장 난이도(Choppiness): {metrics['choppiness']:.3f}",
         f"- 기본 모델 판단: {base.signal} (점수 {base.score:.1f}, 이유: {base.reason})",
         "",
         "지침:",
-        "1) 추세 필터: EMA 20/60/200 정렬 및 MACD, ROC 방향을 우선 평가.",
-        "2) 모멘텀 확인: RSI·Stochastic이 50/20/80 레벨을 어떻게 통과하는지 요약.",
-        "3) 변동성·포지션 관리: 밴드폭이 좁으면 관망, 상단 돌파·하단 이탈은 추세 지속/반전 가능성 언급.",
-        "4) 평균회귀: Z-Score 절댓값이 2 이상이면 과열·과매도 경고.",
-        "5) 신호는 BUY/SELL/HOLD 중 하나를 선택하고, confidence(0~100)를 근거와 함께 제시.",
+        "1) 추세 필터: EMA 20/60/200 정렬, MACD 히스토그램 방향, ROC 24/가속도를 함께 보고 순도 높은 추세만 통과시켜라.",
+        "2) 모멘텀 확인: RSI·Stochastic의 레벨과 기울기, 단기/중기 ROC 간의 가속을 언급하라.",
+        "3) 변동성·포지션 관리: 볼린저·Keltner 스퀴즈 여부, 밴드 상/하단 돌파 맥락을 명확히 진술하라.",
+        "4) 평균회귀: Z-Score 절댓값이 2 이상 또는 %B 0.1/0.9 외곽이면 과열·과매도 경고.",
+        "5) 시장 품질: Choppiness가 높으면 관망을 우선 검토하라.",
+        "6) 신호는 BUY/SELL/HOLD 중 하나를 선택하고, confidence(0~100)를 근거와 함께 제시.",
         "",
         "출력은 JSON 한 줄만 작성한다. 키 이름은 반드시 signal(BUY/SELL/HOLD), confidence(0~100), reason(짧게) 세 개만 사용하라.",
         "예시: {\"signal\": \"BUY\", \"confidence\": 78, \"reason\": \"상승 추세+RSI50 상향+밴드 상단 돌파\"}",

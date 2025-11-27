@@ -48,6 +48,15 @@ def zscore(series: pd.Series, lookback: int = 50) -> pd.Series:
     return (series - rolling_mean) / (rolling_std + 1e-9)
 
 
+def atr_like(series: pd.Series, period: int = 14) -> pd.Series:
+    """
+    고가/저가 데이터가 없을 때 근사 ATR: 종가 변화의 절댓값을 사용한다.
+
+    변동성을 추정하여 Keltner 채널, 변동성 필터 등에 활용한다.
+    """
+    return series.diff().abs().rolling(window=period).mean()
+
+
 def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
     fast_ema = ema(series, fast)
     slow_ema = ema(series, slow)
@@ -63,6 +72,21 @@ def bollinger_bands(series: pd.Series, period: int = 20, num_std: float = 2.0) -
     upper = ma + num_std * std
     lower = ma - num_std * std
     return pd.DataFrame({"upper": upper, "middle": ma, "lower": lower})
+
+
+def percent_b(series: pd.Series, period: int = 20, num_std: float = 2.0) -> pd.Series:
+    """볼린저 밴드 내 현재 가격 위치를 0~1 구간으로 정규화한 %B."""
+    bands = bollinger_bands(series, period=period, num_std=num_std)
+    return (series - bands["lower"]) / (bands["upper"] - bands["lower"] + 1e-9)
+
+
+def keltner_channel(series: pd.Series, period: int = 20, atr_mult: float = 1.5) -> pd.DataFrame:
+    """EMA와 근사 ATR을 활용한 Keltner 채널."""
+    basis = ema(series, period)
+    atr = atr_like(series, period)
+    upper = basis + atr_mult * atr
+    lower = basis - atr_mult * atr
+    return pd.DataFrame({"upper": upper, "middle": basis, "lower": lower})
 
 
 def composite_score(price_history: pd.Series) -> float:
