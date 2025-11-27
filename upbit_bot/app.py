@@ -9,6 +9,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from time import time
 from typing import Callable, Dict, Iterable, List, Optional
 
 import pandas as pd
@@ -17,6 +18,7 @@ from upbit_bot.data.market_fetcher import fetch_markets
 from upbit_bot.data.stream import PriceBuffer, run_stream
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
+from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
 from upbit_bot.trading.executor import OrderResult, place_order
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
@@ -34,6 +36,7 @@ class DecisionUpdate:
     executed: bool
     order_result: Optional[OrderResult]
     timestamp: datetime
+    account: Optional[AccountSnapshot]
 
 
 class TradingBot:
@@ -56,6 +59,12 @@ class TradingBot:
         self.openai_model = openai_model
         self._openai_key = os.environ.get("OPENAI_API_KEY", "")
         self.on_update = on_update
+        self.krw_balance: float = float(os.environ.get("SIMULATED_CASH", 1_000_000))
+        self.avg_price: Dict[str, float] = {}
+        self.account_snapshot: Optional[AccountSnapshot] = None
+        self._last_account_refresh = 0.0
+        self._access = os.environ.get("UPBIT_ACCESS_KEY", "")
+        self._secret = os.environ.get("UPBIT_SECRET_KEY", "")
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -69,6 +78,7 @@ class TradingBot:
             await stream_task
 
     async def _tick(self) -> None:
+        self._refresh_account_snapshot()
         for market in self.markets:
             prices = self.price_buffer.get_prices(market)
             if len(prices) < 50:
@@ -102,6 +112,7 @@ class TradingBot:
                     order_result.raw,
                     ai_raw,
                 )
+                self._refresh_account_snapshot(force=True)
 
             if self.on_update:
                 update = DecisionUpdate(
@@ -114,6 +125,7 @@ class TradingBot:
                     executed=executed,
                     order_result=order_result,
                     timestamp=datetime.utcnow(),
+                    account=self.account_snapshot,
                 )
                 try:
                     self.on_update(update)
@@ -122,21 +134,111 @@ class TradingBot:
 
     def execute(self, decision: Decision) -> OrderResult:
         side = "bid" if decision.signal == Signal.BUY else "ask"
-        volume = max(0.0005, 10000 / decision.price)  # 간단한 고정 리스크 배팅
-        access = os.environ.get("UPBIT_ACCESS_KEY", "")
-        secret = os.environ.get("UPBIT_SECRET_KEY", "")
-        return place_order(
-            access_key=access,
-            secret_key=secret,
+        volume = self._calculate_volume(decision)
+        if volume <= 0:
+            return OrderResult(
+                False,
+                side,
+                decision.market,
+                0.0,
+                decision.price,
+                raw={},
+                error="주문 조건 불충족",
+            )
+
+        result = place_order(
+            access_key=self._access,
+            secret_key=self._secret,
             market=decision.market,
             side=side,
             volume=volume,
             price=decision.price,
-            simulated=self.simulated or not access or not secret,
+            simulated=self.simulated or not self._access or not self._secret,
         )
+
+        if result.success and (self.simulated or not self._access or not self._secret):
+            self._apply_simulated_fill(decision, volume)
+
+        return result
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def _calculate_volume(self, decision: Decision) -> float:
+        snapshot = self.account_snapshot or AccountSnapshot(krw_balance=self.krw_balance, holdings=[], total_value=self.krw_balance)
+        min_order_amount = 10000.0
+
+        if decision.signal == Signal.BUY:
+            available_krw = snapshot.krw_balance if snapshot else self.krw_balance
+            if available_krw < min_order_amount:
+                logger.warning("가용 원화가 부족해 주문을 건너뜁니다. 보유: %.0f", available_krw)
+                return 0.0
+            strength = max(decision.score, 0.0) / 100.0
+            weight = 0.05 + (0.25 - 0.05) * strength  # 5~25% 비중 배정
+            order_amount = min(available_krw, max(min_order_amount, available_krw * weight))
+            return order_amount / decision.price
+
+        holdings = {h.market: h.balance for h in snapshot.holdings} if snapshot else self.positions
+        available_volume = holdings.get(decision.market, self.positions.get(decision.market, 0.0))
+        if available_volume <= 0:
+            logger.warning("보유 물량이 없어 매도 주문을 건너뜁니다: %s", decision.market)
+            return 0.0
+        sell_fraction = min(1.0, abs(decision.score) / 70)  # 신호 강도에 따라 최대 전량
+        return max(0.0, available_volume * sell_fraction)
+
+    def _apply_simulated_fill(self, decision: Decision, volume: float) -> None:
+        amount = volume * decision.price
+        if decision.signal == Signal.BUY:
+            self.krw_balance -= amount
+            prev_volume = self.positions.get(decision.market, 0.0)
+            prev_value = self.avg_price.get(decision.market, 0.0) * prev_volume
+            new_volume = prev_volume + volume
+            avg_price = (prev_value + amount) / new_volume if new_volume else decision.price
+            self.positions[decision.market] = new_volume
+            self.avg_price[decision.market] = avg_price
+        else:
+            self.krw_balance += amount
+            prev_volume = self.positions.get(decision.market, 0.0)
+            remaining = max(0.0, prev_volume - volume)
+            if remaining == 0:
+                self.positions.pop(decision.market, None)
+                self.avg_price.pop(decision.market, None)
+            else:
+                self.positions[decision.market] = remaining
+
+    def _refresh_account_snapshot(self, *, force: bool = False) -> None:
+        now = time()
+        if not force and now - self._last_account_refresh < 5:
+            return
+
+        if self.simulated or not self._access or not self._secret:
+            holdings: List[Holding] = []
+            for market, volume in self.positions.items():
+                last_price = self.price_buffer.latest(market) or self.avg_price.get(market, 0.0)
+                avg_price = self.avg_price.get(market, last_price)
+                estimated = volume * (last_price or avg_price or 0.0)
+                holdings.append(
+                    Holding(
+                        market=market,
+                        currency=market.split("-")[-1],
+                        balance=volume,
+                        avg_buy_price=avg_price or 0.0,
+                        estimated_krw=estimated,
+                    )
+                )
+            total = self.krw_balance + sum(h.estimated_krw for h in holdings)
+            self.account_snapshot = AccountSnapshot(
+                krw_balance=self.krw_balance,
+                holdings=holdings,
+                total_value=total,
+            )
+        else:
+            self.account_snapshot = fetch_account_snapshot(
+                access_key=self._access,
+                secret_key=self._secret,
+                price_lookup=self.price_buffer.latest,
+            )
+        self._last_account_refresh = now
 
 
 async def main() -> None:

@@ -28,6 +28,7 @@ from matplotlib.figure import Figure
 
 from upbit_bot.app import DecisionUpdate, TradingBot
 from upbit_bot.data.market_fetcher import fetch_markets
+from upbit_bot.trading.account import AccountSnapshot
 
 
 @dataclass
@@ -150,6 +151,26 @@ class TradingDashboard:
             self.tree.column(col, anchor=tk.W, width=140 if col == "reason" else 100)
         self.tree.pack(fill=tk.BOTH, expand=True)
 
+        self.account_frame = ttk.Labelframe(right, text="계좌 현황")
+        self.account_frame.pack(fill=tk.BOTH, expand=True, pady=4)
+        self.balance_var = tk.StringVar(value="원화 잔고: -")
+        self.total_var = tk.StringVar(value="총 평가액: -")
+        ttk.Label(self.account_frame, textvariable=self.balance_var).pack(anchor=tk.W, padx=4)
+        ttk.Label(self.account_frame, textvariable=self.total_var).pack(anchor=tk.W, padx=4)
+
+        columns = ("market", "balance", "avg", "est")
+        self.holding_table = ttk.Treeview(self.account_frame, columns=columns, show="headings", height=6)
+        headings = {
+            "market": "종목",
+            "balance": "보유 수량",
+            "avg": "평단가",
+            "est": "평가액(원)",
+        }
+        for col, text in headings.items():
+            self.holding_table.heading(col, text=text)
+            self.holding_table.column(col, anchor=tk.W, width=120)
+        self.holding_table.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+
         ttk.Label(right, text="최근 이벤트 로그").pack(anchor=tk.W)
         self.log = tk.Text(right, height=10)
         self.log.pack(fill=tk.BOTH, expand=True)
@@ -215,6 +236,8 @@ class TradingDashboard:
                 if not self.chart_market.get():
                     self.chart_market.set(update.market)
             self._append_log(update)
+            if update.account:
+                self._update_account(update.account)
         self._refresh_table()
         self._refresh_chart()
         if self.status.running:
@@ -257,6 +280,23 @@ class TradingDashboard:
             prices = list(self.price_history[market])
             self.ax.plot(prices, color="blue")
         self.canvas.draw_idle()
+
+    def _update_account(self, snapshot: AccountSnapshot) -> None:
+        self.balance_var.set(f"원화 잔고: {snapshot.krw_balance:,.0f}원")
+        self.total_var.set(f"총 평가액: {snapshot.total_value:,.0f}원")
+        for row in self.holding_table.get_children():
+            self.holding_table.delete(row)
+        for h in snapshot.holdings:
+            self.holding_table.insert(
+                "",
+                tk.END,
+                values=(
+                    h.market,
+                    f"{h.balance:,.6f}",
+                    f"{h.avg_buy_price:,.0f}",
+                    f"{h.estimated_krw:,.0f}",
+                ),
+            )
 
     def _on_close(self) -> None:
         self.stop_trading()
