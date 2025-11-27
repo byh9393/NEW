@@ -178,6 +178,28 @@ def _aggregate_factors(prices: pd.Series) -> Tuple[float, List[str], Dict[str, f
     return score, reasons, raw_scores
 
 
+def _confidence(raw_scores: Dict[str, float]) -> float:
+    """강한 시그널만 통과시키기 위한 정성적 확신도."""
+
+    positives = 0
+    total = 0
+    thresholds = {
+        "trend": 12,
+        "momentum": 10,
+        "quality": 5,
+        "volatility": -5,
+        "mean_reversion": 0,
+    }
+    for key, bar in thresholds.items():
+        if key in raw_scores:
+            total += 1
+            if raw_scores[key] >= bar:
+                positives += 1
+    if total == 0:
+        return 0.0
+    return positives / total
+
+
 def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_threshold: float = -25) -> Decision:
     """
     시장의 최근 가격 히스토리를 바탕으로 매수/매도 신호 평가.
@@ -201,18 +223,23 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
     cost_buffer = (fee_rate + slippage_est) * 140  # 점수 스케일로 변환
     volatility_buffer = np.clip(atr_ratio * 120, 0, 10)
 
+    confidence = _confidence(raw_scores)
+    conviction_buffer = 8 + cost_buffer * 0.4 + volatility_buffer
+
     effective_buy = (
         buy_threshold
         + (6 if trend_score < 0 else 0)
         + (4 if quality_score < -10 else 0)
         + cost_buffer
         + volatility_buffer
+        + conviction_buffer
     )
     effective_sell = (
         sell_threshold
         - (5 if trend_score < -25 else 0)
         - (cost_buffer * 0.6)
         - (volatility_buffer * 0.5)
+        - conviction_buffer * 0.5
     )
 
     # 손절/익절/트레일링 스탑 탐지 (ATR·볼린저 기반)
@@ -232,21 +259,41 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
     # 연속 손실/드로다운 기반 쿨다운 확인
     cooldown_active, cooldown_reason, drawdown = _cooldown_check(market, prices)
 
+    strong_buy = (
+        score >= effective_buy
+        and confidence >= 0.65
+        and trend_score > 10
+        and raw_scores.get("momentum", 0.0) > 8
+        and quality_score > -5
+    )
+    strong_sell = (
+        score <= effective_sell
+        and confidence >= 0.65
+        and trend_score < -10
+        and raw_scores.get("momentum", 0.0) < -8
+    )
+
     if stop_reason:
         signal = Signal.SELL
         reason = f"리스크 종료 신호: {stop_reason}"
     elif cooldown_active:
         signal = Signal.HOLD
         reason = f"쿨다운: {cooldown_reason or f'DD {drawdown*100:.1f}%'}"
-    elif score >= effective_buy:
+    elif strong_buy:
         signal = Signal.BUY
-        reason = f"복합점수 {score:.1f} ≥ 매수 임계 {effective_buy:.1f} | " + "; ".join(reasons[:2])
-    elif score <= effective_sell:
+        reason = (
+            f"확신도 {confidence:.2f}·복합점수 {score:.1f} ≥ 매수 임계 {effective_buy:.1f} | "
+            + "; ".join(reasons[:2])
+        )
+    elif strong_sell:
         signal = Signal.SELL
-        reason = f"복합점수 {score:.1f} ≤ 매도 임계 {effective_sell:.1f} | " + "; ".join(reasons[:2])
+        reason = (
+            f"확신도 {confidence:.2f}·복합점수 {score:.1f} ≤ 매도 임계 {effective_sell:.1f} | "
+            + "; ".join(reasons[:2])
+        )
     else:
         signal = Signal.HOLD
-        reason = "중립 영역 | " + "; ".join(reasons[:2])
+        reason = f"확신 부족({confidence:.2f}) 또는 중립 | " + "; ".join(reasons[:2])
 
     decision = Decision(
         market=market,
