@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Deque, Dict, Iterable, List, Optional, Set
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, Qt,
-                            QSortFilterProxyModel, QTimer)
+                            QSortFilterProxyModel, QTimer, Signal)
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -49,7 +49,7 @@ TIMESTAMP_ROLE = Qt.UserRole + 2
 class UpdateAdapter(QObject):
     """TradingBot의 ``on_update``를 받아 Qt 시그널로 전달."""
 
-    update_received = Qt.Signal(object)
+    update_received = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -258,6 +258,7 @@ class DesktopDashboard(QMainWindow):
         self.proxy_model.setSourceModel(self.signal_model)
         self.price_history: Dict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=200))
         self.latest_account = None
+        self.active_markets: List[str] = []
 
         self._init_ui()
         self._apply_light_theme()
@@ -317,6 +318,10 @@ class DesktopDashboard(QMainWindow):
         self.search_box.setPlaceholderText("검색/필터")
         self.search_box.textChanged.connect(self.proxy_model.set_query)
         h.addWidget(self.search_box)
+
+        self.status_label = QLabel("대기 중")
+        self.status_label.setMinimumWidth(200)
+        h.addWidget(self.status_label)
 
         self.theme_btn = QToolButton()
         self.theme_btn.setText("라이트")
@@ -407,15 +412,19 @@ class DesktopDashboard(QMainWindow):
             return
 
         self.runner.start(markets, simulated=self.simulated_check.isChecked(), use_ai=self.ai_check.isChecked())
+        self.active_markets = markets
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._show_banner(f"{len(markets)}개 마켓 구독 시작", success=True)
+        self.status_label.setText(f"실행 중 | 모니터링 {len(markets)}개")
 
     def stop_trading(self) -> None:
         self.runner.stop()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._show_banner("거래 종료", success=True)
+        self.status_label.setText("대기 중")
+        self.active_markets = []
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.adapter.stop()
@@ -456,7 +465,10 @@ class DesktopDashboard(QMainWindow):
 
     def _append_log(self, update: DecisionUpdate) -> None:
         ts = update.timestamp.strftime("%H:%M:%S")
-        line = f"[{ts}] {update.market} {update.signal.name} 점수 {update.score:.1f} | {update.reason}\n"
+        ai_txt = (update.ai_raw or "-").split("\n")[0]
+        ai_short = ai_txt[:80] + ("..." if len(ai_txt) > 80 else "")
+        status = "실행" if update.executed else "대기"
+        line = f"[{ts}] {update.market} {update.signal.name} 점수 {update.score:.1f} ({status}) | {update.reason} | AI={ai_short}\n"
         self.log_view.append(line)
 
     def _update_account(self, snapshot) -> None:
