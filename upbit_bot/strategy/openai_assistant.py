@@ -153,13 +153,13 @@ def evaluate_with_openai(
     metrics = _format_metrics(prices)
     prompt = _build_prompt(market, prices, base, metrics)
     try:
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model=model,
-            input=[{"role": "user", "content": prompt}],
-            max_output_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
             temperature=0.2,
         )
-        raw_text = response.output_text
+        raw_text = response.choices[0].message.content if response.choices else ""
         if not raw_text:
             raise ValueError("빈 응답")
         decision = _parse_signal(raw_text, base)
