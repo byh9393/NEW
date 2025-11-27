@@ -139,6 +139,7 @@ def _parse_signal(raw: str, fallback: Decision) -> Decision:
             score=score,
             signal=signal,
             reason=reason,
+            quality=fallback.quality,
         )
     except Exception:
         logger.warning("LLM 응답 파싱 실패, 기본 결정 사용. raw=%s", raw)
@@ -159,7 +160,7 @@ def evaluate_with_openai(
     OpenAI API 키가 없거나 통신 오류가 발생하면 기본 결정을 반환한다.
     """
     if prices.empty:
-        empty_decision = base_decision or Decision(market, 0.0, 0.0, Signal.HOLD, "데이터 없음")
+        empty_decision = base_decision or Decision(market, 0.0, 0.0, Signal.HOLD, "데이터 없음", 0.0)
         return AIDecision(decision=empty_decision, raw_response="")
 
     base = base_decision or evaluate_composite(market, prices)
