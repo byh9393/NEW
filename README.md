@@ -21,6 +21,7 @@ pip install -r requirements.txt
 python -m upbit_bot.app
 ```
 
+
 ## 환경 변수 및 .env 설정
 - 프로젝트 루트의 `.env` 파일에 아래 키를 입력하면 패키지 초기화 시 자동으로 불러옵니다.
   ```env
