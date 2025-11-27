@@ -5,3 +5,4 @@ websockets
 openai
 python-dotenv
 matplotlib
+PySide6
