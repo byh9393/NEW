@@ -16,7 +16,7 @@ from typing import Deque, Dict, Iterable, List, Optional, Set
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, Qt,
                             QSortFilterProxyModel, QTimer, Signal)
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPalette, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -192,7 +192,11 @@ class SignalTableModel(QAbstractTableModel):
             self.beginInsertRows(QModelIndex(), len(self._order), len(self._order))
             self._order.append(market)
             self.endInsertRows()
-        self.dataChanged.emit(self.index(0, 0), self.index(len(self._order) - 1, len(self.headers) - 1))
+        else:
+            row = self._order.index(market)
+            top_left = self.index(row, 0)
+            bottom_right = self.index(row, len(self.headers) - 1)
+            self.dataChanged.emit(top_left, bottom_right, [Qt.DisplayRole, Qt.EditRole])
 
 
 class SignalFilterProxy(QSortFilterProxyModel):
@@ -259,6 +263,12 @@ class DesktopDashboard(QMainWindow):
         self.price_history: Dict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=200))
         self.latest_account = None
         self.active_markets: List[str] = []
+        self._chart_dirty = False
+        self._chart_timer = QTimer(self)
+        self._chart_timer.setInterval(800)
+        self._chart_timer.timeout.connect(self._refresh_chart_if_needed)
+        self._chart_timer.start()
+        self._max_log_lines = 500
 
         self._init_ui()
         self._apply_light_theme()
@@ -450,7 +460,10 @@ class DesktopDashboard(QMainWindow):
         self.price_history[update.market].append(update.price)
         if self.chart_selector.findText(update.market) == -1:
             self.chart_selector.addItem(update.market)
-        self._refresh_chart()
+        if not self.chart_selector.currentText():
+            self.chart_selector.setCurrentText(update.market)
+        if update.market == self.chart_selector.currentText():
+            self._chart_dirty = True
 
         if update.account:
             self.latest_account = update.account
@@ -470,6 +483,12 @@ class DesktopDashboard(QMainWindow):
         status = "실행" if update.executed else "대기"
         line = f"[{ts}] {update.market} {update.signal.name} 점수 {update.score:.1f} ({status}) | {update.reason} | AI={ai_short}\n"
         self.log_view.append(line)
+        if self.log_view.document().blockCount() > self._max_log_lines:
+            cursor = self.log_view.textCursor()
+            cursor.movePosition(QTextCursor.Start)
+            cursor.select(QTextCursor.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
 
     def _update_account(self, snapshot) -> None:
         self.balance_label.setText(f"원화 잔고: {snapshot.krw_balance:,.0f}원")
@@ -486,6 +505,12 @@ class DesktopDashboard(QMainWindow):
         self.ax.set_xlabel("틱")
         self.ax.set_ylabel("가격")
         self.canvas.draw_idle()
+
+    def _refresh_chart_if_needed(self) -> None:
+        if not self._chart_dirty:
+            return
+        self._chart_dirty = False
+        self._refresh_chart()
 
     def _show_banner(self, text: str, *, success: bool) -> None:
         color = "#d1f2d9" if success else "#ffd6d6"

@@ -67,6 +67,8 @@ class TradingBot:
         self._access = os.environ.get("UPBIT_ACCESS_KEY", "")
         self._secret = os.environ.get("UPBIT_SECRET_KEY", "")
         self.fee_rate = fee_rate
+        self.min_trade_interval = 180  # 초 단위, 과도한 매매 방지
+        self._last_trade_ts: Dict[str, float] = {}
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -103,18 +105,33 @@ class TradingBot:
 
             executed = False
             order_result: Optional[OrderResult] = None
+            now = time()
             if decision.signal != Signal.HOLD:
-                order_result = self.execute(decision)
-                executed = True
-                logger.info(
-                    "%s -> %s (점수 %.1f): %s | AI=%s",
-                    market,
-                    decision.signal,
-                    decision.score,
-                    order_result.raw,
-                    ai_raw,
-                )
-                self._refresh_account_snapshot(force=True)
+                last_trade = self._last_trade_ts.get(market, 0.0)
+                remaining_cooldown = self.min_trade_interval - (now - last_trade)
+                if remaining_cooldown > 0:
+                    decision = Decision(
+                        market=decision.market,
+                        price=decision.price,
+                        score=decision.score,
+                        signal=Signal.HOLD,
+                        reason=f"최근 거래 후 {remaining_cooldown:.0f}s 대기 중",
+                        quality=decision.quality,
+                    )
+                else:
+                    order_result = self.execute(decision)
+                    executed = True
+                    if order_result.success:
+                        self._last_trade_ts[market] = now
+                    logger.info(
+                        "%s -> %s (점수 %.1f): %s | AI=%s",
+                        market,
+                        decision.signal,
+                        decision.score,
+                        order_result.raw,
+                        ai_raw,
+                    )
+                    self._refresh_account_snapshot(force=True)
 
             if self.on_update:
                 update = DecisionUpdate(
