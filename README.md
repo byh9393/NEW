@@ -1,1 +1,36 @@
-# NEW
+# 업비트 자동매매 봇
+
+Python 기반으로 업비트 거래소 모든 원화마켓을 실시간 추적하며 **OpenAI 기반 평가**와 다중 기술적 지표(EMA 트렌드, RSI·Stochastic 모멘텀, 볼린저 변동성, 평균회귀 필터)를 조합해 매수·매도 타이밍을 판단하는 자동매매 프로젝트입니다. 기본값은 모의주문 모드로 실행되며, 실제 주문을 사용하려면 API 키를 환경 변수로 설정하면 됩니다.
+
+## 특징
+- **시장 수집**: 업비트 REST API로 모든 KRW 마켓 리스트를 받아옵니다.
+- **실시간 데이터**: 업비트 웹소켓을 통해 틱 가격을 수신하고 버퍼에 저장합니다.
+- **기술적 지표**: EMA(20/60/200) 정렬, RSI/스토캐스틱, 볼린저 밴드 위치·밴드폭, ROC, Z-Score 등 시스템 트레이더가 선호하는 다중 지표를 계산합니다.
+- **전략**: 추세·모멘텀·변동성·평균회귀 네 축을 가중 합산한 복합 점수(-100~100)에 따라 매수/매도/대기 신호를 생성합니다.
+- **OpenAI 강화 판단**: 기본 전략 결과와 확장된 지표 요약을 GPT-4o-mini 등에 전달해 전문가형 BUY/SELL/HOLD 결정을 JSON으로 회신받아 실행합니다.
+- **주문 실행**: 환경 변수 `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`가 없을 경우 모의주문으로 안전하게 동작합니다.
+
+## 설치
+```bash
+pip install -r requirements.txt
+```
+
+## 실행 (데모)
+10초 동안 실시간 가격을 구독하며 신호를 출력하는 예시입니다.
+```bash
+python -m upbit_bot.app
+```
+
+## 환경 변수 및 .env 설정
+- 프로젝트 루트의 `.env` 파일에 아래 키를 입력하면 패키지 초기화 시 자동으로 불러옵니다.
+  ```env
+  OPENAI_API_KEY=your-openai-api-key
+  UPBIT_ACCESS_KEY=your-upbit-access-key
+  UPBIT_SECRET_KEY=your-upbit-secret-key
+  ```
+- `OPENAI_API_KEY`: OpenAI 모델 호출에 사용. 설정되어 있으면 LLM이 기본 기술적 판단을 보강합니다.
+- `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`: 실거래 주문용 업비트 API 키. 둘 다 없으면 모의주문으로 실행합니다.
+
+## 실제 주문 사용 시 주의
+- 실거래를 활성화하려면 환경 변수에 업비트 API 키를 설정하고 `TradingBot(simulated=False)`로 생성하거나 `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`를 주입하세요.
+- 자동매매는 원금 손실 위험이 있습니다. 본 코드는 참고용이며, 실제 자금 운용 전 충분한 테스트와 리스크 관리가 필요합니다.
