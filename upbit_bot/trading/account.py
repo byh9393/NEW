@@ -31,6 +31,9 @@ class AccountSnapshot:
     krw_balance: float
     holdings: List[Holding]
     total_value: float
+    total_fee: float = 0.0
+    profit: float = 0.0
+    profit_pct: float = 0.0
 
 
 def fetch_account_snapshot(
@@ -80,4 +83,11 @@ def fetch_account_snapshot(
             )
         )
 
-    return AccountSnapshot(krw_balance=krw_balance, holdings=holdings, total_value=total_value)
+    return AccountSnapshot(
+        krw_balance=krw_balance,
+        holdings=holdings,
+        total_value=total_value,
+        total_fee=0.0,
+        profit=0.0,
+        profit_pct=0.0,
+    )

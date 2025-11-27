@@ -386,8 +386,12 @@ class DesktopDashboard(QMainWindow):
 
         self.balance_label = QLabel("원화 잔고: -")
         self.total_label = QLabel("총 평가액: -")
+        self.profit_label = QLabel("손익: -")
+        self.fee_label = QLabel("누적 수수료: -")
         v.addWidget(self.balance_label)
         v.addWidget(self.total_label)
+        v.addWidget(self.profit_label)
+        v.addWidget(self.fee_label)
 
         self.favorite_box = QComboBox()
         self.favorite_box.setPlaceholderText("즐겨찾기 마켓")
@@ -518,6 +522,10 @@ class DesktopDashboard(QMainWindow):
     def _update_account(self, snapshot) -> None:
         self.balance_label.setText(f"원화 잔고: {snapshot.krw_balance:,.0f}원")
         self.total_label.setText(f"총 평가액: {snapshot.total_value:,.0f}원")
+        self.profit_label.setText(
+            f"손익: {snapshot.profit:,.0f}원 ({snapshot.profit_pct:+.2f}%)"
+        )
+        self.fee_label.setText(f"누적 수수료: {snapshot.total_fee:,.0f}원")
         self.holding_model.update(snapshot.holdings)
         self.holding_view_proxy.invalidate()
 
