@@ -7,7 +7,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Dict, Iterable, List
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable, Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -21,6 +23,19 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(na
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class DecisionUpdate:
+    market: str
+    price: float
+    score: float
+    signal: Signal
+    reason: str
+    ai_raw: str
+    executed: bool
+    order_result: Optional[OrderResult]
+    timestamp: datetime
+
+
 class TradingBot:
     def __init__(
         self,
@@ -30,6 +45,7 @@ class TradingBot:
         simulated: bool = True,
         use_ai: bool = True,
         openai_model: str = "gpt-4o-mini",
+        on_update: Optional[Callable[[DecisionUpdate], None]] = None,
     ) -> None:
         self.markets: List[str] = list(markets)
         self.price_buffer = PriceBuffer(maxlen=maxlen)
@@ -39,6 +55,7 @@ class TradingBot:
         self.use_ai = use_ai
         self.openai_model = openai_model
         self._openai_key = os.environ.get("OPENAI_API_KEY", "")
+        self.on_update = on_update
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -72,16 +89,36 @@ class TradingBot:
                 decision = ai_decision.decision
                 ai_raw = ai_decision.raw_response
 
+            executed = False
+            order_result: Optional[OrderResult] = None
             if decision.signal != Signal.HOLD:
-                result = self.execute(decision)
+                order_result = self.execute(decision)
+                executed = True
                 logger.info(
                     "%s -> %s (점수 %.1f): %s | AI=%s",
                     market,
                     decision.signal,
                     decision.score,
-                    result.raw,
+                    order_result.raw,
                     ai_raw,
                 )
+
+            if self.on_update:
+                update = DecisionUpdate(
+                    market=market,
+                    price=decision.price,
+                    score=decision.score,
+                    signal=decision.signal,
+                    reason=decision.reason,
+                    ai_raw=ai_raw,
+                    executed=executed,
+                    order_result=order_result,
+                    timestamp=datetime.utcnow(),
+                )
+                try:
+                    self.on_update(update)
+                except Exception:
+                    logger.exception("on_update 콜백 처리 중 오류")
 
     def execute(self, decision: Decision) -> OrderResult:
         side = "bid" if decision.signal == Signal.BUY else "ask"
@@ -97,6 +134,9 @@ class TradingBot:
             price=decision.price,
             simulated=self.simulated or not access or not secret,
         )
+
+    def stop(self) -> None:
+        self.stop_event.set()
 
 
 async def main() -> None:
