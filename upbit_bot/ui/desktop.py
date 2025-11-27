@@ -67,8 +67,18 @@ class UpdateAdapter(QObject):
         self.timer.stop()
 
     def flush(self) -> None:
+        drained: Dict[str, DecisionUpdate] = {}
         while not self.queue.empty():
-            self.update_received.emit(self.queue.get())
+            try:
+                update = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            drained[update.market] = update
+            if len(drained) >= 200:
+                break
+
+        for update in drained.values():
+            self.update_received.emit(update)
 
 
 class BotRunner:
@@ -263,12 +273,23 @@ class DesktopDashboard(QMainWindow):
         self.price_history: Dict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=200))
         self.latest_account = None
         self.active_markets: List[str] = []
+        self._proxy_dirty = False
+        self._proxy_timer = QTimer(self)
+        self._proxy_timer.setInterval(250)
+        self._proxy_timer.timeout.connect(self._refresh_proxy_if_needed)
+        self._proxy_timer.start()
         self._chart_dirty = False
         self._chart_timer = QTimer(self)
         self._chart_timer.setInterval(800)
         self._chart_timer.timeout.connect(self._refresh_chart_if_needed)
         self._chart_timer.start()
         self._max_log_lines = 500
+        self._log_buffer: Deque[str] = deque(maxlen=self._max_log_lines)
+        self._log_dirty = False
+        self._log_timer = QTimer(self)
+        self._log_timer.setInterval(500)
+        self._log_timer.timeout.connect(self._flush_logs)
+        self._log_timer.start()
 
         self._init_ui()
         self._apply_light_theme()
@@ -456,7 +477,7 @@ class DesktopDashboard(QMainWindow):
 
     def _handle_update(self, update: DecisionUpdate) -> None:
         self.signal_model.upsert(update)
-        self.proxy_model.invalidateFilter()
+        self._mark_proxy_dirty()
         self.price_history[update.market].append(update.price)
         if self.chart_selector.findText(update.market) == -1:
             self.chart_selector.addItem(update.market)
@@ -476,19 +497,23 @@ class DesktopDashboard(QMainWindow):
         if update.order_result and update.order_result.error:
             self._show_banner(update.order_result.error, success=False)
 
+    def _mark_proxy_dirty(self) -> None:
+        self._proxy_dirty = True
+
+    def _refresh_proxy_if_needed(self) -> None:
+        if not self._proxy_dirty:
+            return
+        self._proxy_dirty = False
+        self.proxy_model.invalidate()
+
     def _append_log(self, update: DecisionUpdate) -> None:
         ts = update.timestamp.strftime("%H:%M:%S")
         ai_txt = (update.ai_raw or "-").split("\n")[0]
         ai_short = ai_txt[:80] + ("..." if len(ai_txt) > 80 else "")
         status = "실행" if update.executed else "대기"
         line = f"[{ts}] {update.market} {update.signal.name} 점수 {update.score:.1f} ({status}) | {update.reason} | AI={ai_short}\n"
-        self.log_view.append(line)
-        if self.log_view.document().blockCount() > self._max_log_lines:
-            cursor = self.log_view.textCursor()
-            cursor.movePosition(QTextCursor.Start)
-            cursor.select(QTextCursor.BlockUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
+        self._log_buffer.append(line)
+        self._log_dirty = True
 
     def _update_account(self, snapshot) -> None:
         self.balance_label.setText(f"원화 잔고: {snapshot.krw_balance:,.0f}원")
@@ -511,6 +536,18 @@ class DesktopDashboard(QMainWindow):
             return
         self._chart_dirty = False
         self._refresh_chart()
+
+    def _flush_logs(self) -> None:
+        if not self._log_dirty:
+            return
+
+        self._log_dirty = False
+        trimmed = list(self._log_buffer)[-self._max_log_lines :]
+        self._log_buffer = deque(trimmed, maxlen=self._max_log_lines)
+        self.log_view.setPlainText("".join(self._log_buffer))
+        cursor = self.log_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.log_view.setTextCursor(cursor)
 
     def _show_banner(self, text: str, *, success: bool) -> None:
         color = "#d1f2d9" if success else "#ffd6d6"
