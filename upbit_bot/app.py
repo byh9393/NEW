@@ -69,6 +69,8 @@ class TradingBot:
         self.fee_rate = fee_rate
         self.min_trade_interval = 180  # 초 단위, 과도한 매매 방지
         self._last_trade_ts: Dict[str, float] = {}
+        self.total_fees: float = 0.0
+        self.initial_value: Optional[float] = None
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -182,6 +184,10 @@ class TradingBot:
         if result.success and (self.simulated or not self._access or not self._secret):
             self._apply_simulated_fill(decision, volume, fee_rate=self.fee_rate)
 
+        if result.success and not (self.simulated or not self._access or not self._secret):
+            # 실거래 시 주문 응답에 포함된 예상 수수료를 누적 관리
+            self.total_fees += result.fee
+
         return result
 
     def stop(self) -> None:
@@ -227,6 +233,7 @@ class TradingBot:
     def _apply_simulated_fill(self, decision: Decision, volume: float, *, fee_rate: float) -> None:
         amount = volume * decision.price
         fee = amount * fee_rate
+        self.total_fees += fee
         if decision.signal == Signal.BUY:
             acquired_volume = volume * (1 - fee_rate)
             total_cost = amount + fee
@@ -269,17 +276,33 @@ class TradingBot:
                     )
                 )
             total = self.krw_balance + sum(h.estimated_krw for h in holdings)
+            if self.initial_value is None:
+                self.initial_value = total
+            profit = total - (self.initial_value or total)
+            profit_pct = (profit / self.initial_value * 100) if self.initial_value else 0.0
             self.account_snapshot = AccountSnapshot(
                 krw_balance=self.krw_balance,
                 holdings=holdings,
                 total_value=total,
+                total_fee=self.total_fees,
+                profit=profit,
+                profit_pct=profit_pct,
             )
         else:
-            self.account_snapshot = fetch_account_snapshot(
+            snapshot = fetch_account_snapshot(
                 access_key=self._access,
                 secret_key=self._secret,
                 price_lookup=self.price_buffer.latest,
             )
+            if snapshot:
+                if self.initial_value is None:
+                    self.initial_value = snapshot.total_value
+                profit = snapshot.total_value - (self.initial_value or snapshot.total_value)
+                profit_pct = (profit / self.initial_value * 100) if self.initial_value else 0.0
+                snapshot.total_fee = self.total_fees
+                snapshot.profit = profit
+                snapshot.profit_pct = profit_pct
+            self.account_snapshot = snapshot
         self._last_account_refresh = now
 
 

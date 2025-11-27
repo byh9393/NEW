@@ -222,6 +222,7 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
     slippage_est = min(0.002, atr_ratio * 1.6)
     cost_buffer = (fee_rate + slippage_est) * 140  # 점수 스케일로 변환
     volatility_buffer = np.clip(atr_ratio * 120, 0, 10)
+    edge_score = score - cost_buffer * 0.6 - volatility_buffer * 0.8
 
     confidence = _confidence(raw_scores)
     conviction_buffer = 8 + cost_buffer * 0.4 + volatility_buffer
@@ -260,22 +261,27 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
     cooldown_active, cooldown_reason, drawdown = _cooldown_check(market, prices)
 
     strong_buy = (
-        score >= effective_buy
+        edge_score >= effective_buy
         and confidence >= 0.65
         and trend_score > 10
         and raw_scores.get("momentum", 0.0) > 8
         and quality_score > -5
+        and atr_ratio < 0.055
     )
     strong_sell = (
-        score <= effective_sell
+        edge_score <= effective_sell
         and confidence >= 0.65
         and trend_score < -10
         and raw_scores.get("momentum", 0.0) < -8
+        and atr_ratio < 0.06
     )
 
     if stop_reason:
         signal = Signal.SELL
         reason = f"리스크 종료 신호: {stop_reason}"
+    elif abs(edge_score) < 10:
+        signal = Signal.HOLD
+        reason = f"수수료/슬리피지 대비 기대 수익 부족 (엣지 {edge_score:.1f})"
     elif cooldown_active:
         signal = Signal.HOLD
         reason = f"쿨다운: {cooldown_reason or f'DD {drawdown*100:.1f}%'}"
