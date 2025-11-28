@@ -37,6 +37,7 @@ class DecisionUpdate:
     order_result: Optional[OrderResult]
     timestamp: datetime
     account: Optional[AccountSnapshot]
+    suppress_log: bool
 
 
 class TradingBot:
@@ -67,8 +68,6 @@ class TradingBot:
         self._access = os.environ.get("UPBIT_ACCESS_KEY", "")
         self._secret = os.environ.get("UPBIT_SECRET_KEY", "")
         self.fee_rate = fee_rate
-        self.min_trade_interval = 180  # 초 단위, 과도한 매매 방지
-        self._last_trade_ts: Dict[str, float] = {}
         self.total_fees: float = 0.0
         self.initial_value: Optional[float] = None
 
@@ -107,33 +106,18 @@ class TradingBot:
 
             executed = False
             order_result: Optional[OrderResult] = None
-            now = time()
             if decision.signal != Signal.HOLD:
-                last_trade = self._last_trade_ts.get(market, 0.0)
-                remaining_cooldown = self.min_trade_interval - (now - last_trade)
-                if remaining_cooldown > 0:
-                    decision = Decision(
-                        market=decision.market,
-                        price=decision.price,
-                        score=decision.score,
-                        signal=Signal.HOLD,
-                        reason=f"최근 거래 후 {remaining_cooldown:.0f}s 대기 중",
-                        quality=decision.quality,
-                    )
-                else:
-                    order_result = self.execute(decision)
-                    executed = True
-                    if order_result.success:
-                        self._last_trade_ts[market] = now
-                    logger.info(
-                        "%s -> %s (점수 %.1f): %s | AI=%s",
-                        market,
-                        decision.signal,
-                        decision.score,
-                        order_result.raw,
-                        ai_raw,
-                    )
-                    self._refresh_account_snapshot(force=True)
+                order_result = self.execute(decision)
+                executed = True
+                logger.info(
+                    "%s -> %s (점수 %.1f): %s | AI=%s",
+                    market,
+                    decision.signal,
+                    decision.score,
+                    order_result.raw,
+                    ai_raw,
+                )
+                self._refresh_account_snapshot(force=True)
 
             if self.on_update:
                 update = DecisionUpdate(
@@ -147,6 +131,7 @@ class TradingBot:
                     order_result=order_result,
                     timestamp=datetime.utcnow(),
                     account=self.account_snapshot,
+                    suppress_log=decision.suppress_log,
                 )
                 try:
                     self.on_update(update)
@@ -307,7 +292,7 @@ class TradingBot:
 
 
 async def main() -> None:
-    markets = fetch_markets(is_fiat=True, fiat_symbol="KRW")
+    markets = fetch_markets(is_fiat=True, fiat_symbol="KRW", top_by_volume=5)
     bot = TradingBot(markets=markets, simulated=True)
     try:
         await asyncio.wait_for(bot.start(), timeout=10)

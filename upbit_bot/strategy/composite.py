@@ -44,6 +44,7 @@ class Decision:
     signal: Signal
     reason: str
     quality: float = 0.0
+    suppress_log: bool = False
 
 
 def _trend_component(prices: pd.Series) -> Tuple[float, str]:
@@ -178,28 +179,6 @@ def _aggregate_factors(prices: pd.Series) -> Tuple[float, List[str], Dict[str, f
     return score, reasons, raw_scores
 
 
-def _confidence(raw_scores: Dict[str, float]) -> float:
-    """강한 시그널만 통과시키기 위한 정성적 확신도."""
-
-    positives = 0
-    total = 0
-    thresholds = {
-        "trend": 12,
-        "momentum": 10,
-        "quality": 5,
-        "volatility": -5,
-        "mean_reversion": 0,
-    }
-    for key, bar in thresholds.items():
-        if key in raw_scores:
-            total += 1
-            if raw_scores[key] >= bar:
-                positives += 1
-    if total == 0:
-        return 0.0
-    return positives / total
-
-
 def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_threshold: float = -25) -> Decision:
     """
     시장의 최근 가격 히스토리를 바탕으로 매수/매도 신호 평가.
@@ -224,8 +203,16 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
     volatility_buffer = np.clip(atr_ratio * 120, 0, 10)
     edge_score = score - cost_buffer * 0.6 - volatility_buffer * 0.8
 
-    confidence = _confidence(raw_scores)
-    conviction_buffer = 8 + cost_buffer * 0.4 + volatility_buffer
+    # 주요 팩터가 한 방향으로 강하게 모여 있는지 확인해 약한 잡음을 배제한다.
+    positive_components = sum(
+        raw_scores[name] > 12 for name in ("trend", "momentum", "volatility")
+    ) + (1 if raw_scores.get("quality", 0.0) > 5 else 0)
+    negative_components = sum(
+        raw_scores[name] < -12 for name in ("trend", "momentum", "volatility")
+    ) + (1 if raw_scores.get("quality", 0.0) < -5 else 0)
+    mean_reversion_bias = raw_scores.get("mean_reversion", 0.0)
+    strong_buy_alignment = positive_components >= 3 and mean_reversion_bias > -12
+    strong_sell_alignment = negative_components >= 3 and mean_reversion_bias < 12
 
     effective_buy = (
         buy_threshold
@@ -233,14 +220,12 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
         + (4 if quality_score < -10 else 0)
         + cost_buffer
         + volatility_buffer
-        + conviction_buffer
     )
     effective_sell = (
         sell_threshold
         - (5 if trend_score < -25 else 0)
         - (cost_buffer * 0.6)
         - (volatility_buffer * 0.5)
-        - conviction_buffer * 0.5
     )
 
     # 손절/익절/트레일링 스탑 탐지 (ATR·볼린저 기반)
@@ -259,47 +244,33 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
 
     # 연속 손실/드로다운 기반 쿨다운 확인
     cooldown_active, cooldown_reason, drawdown = _cooldown_check(market, prices)
-
-    strong_buy = (
-        edge_score >= effective_buy
-        and confidence >= 0.65
-        and trend_score > 10
-        and raw_scores.get("momentum", 0.0) > 8
-        and quality_score > -5
-        and atr_ratio < 0.055
-    )
-    strong_sell = (
-        edge_score <= effective_sell
-        and confidence >= 0.65
-        and trend_score < -10
-        and raw_scores.get("momentum", 0.0) < -8
-        and atr_ratio < 0.06
-    )
-
+    suppress_log = False
     if stop_reason:
         signal = Signal.SELL
         reason = f"리스크 종료 신호: {stop_reason}"
     elif abs(edge_score) < 10:
         signal = Signal.HOLD
         reason = f"수수료/슬리피지 대비 기대 수익 부족 (엣지 {edge_score:.1f})"
+        suppress_log = True
     elif cooldown_active:
         signal = Signal.HOLD
         reason = f"쿨다운: {cooldown_reason or f'DD {drawdown*100:.1f}%'}"
-    elif strong_buy:
+    elif score >= effective_buy and strong_buy_alignment and edge_score >= 12:
         signal = Signal.BUY
         reason = (
-            f"확신도 {confidence:.2f}·복합점수 {score:.1f} ≥ 매수 임계 {effective_buy:.1f} | "
-            + "; ".join(reasons[:2])
+            f"강한 매수 합의: 복합점수 {score:.1f} ≥ {effective_buy:.1f}, "
+            f"동행 팩터 {positive_components}개, 평균회귀 {mean_reversion_bias:.1f}"
         )
-    elif strong_sell:
+    elif score <= effective_sell and strong_sell_alignment and edge_score <= -12:
         signal = Signal.SELL
         reason = (
-            f"확신도 {confidence:.2f}·복합점수 {score:.1f} ≤ 매도 임계 {effective_sell:.1f} | "
-            + "; ".join(reasons[:2])
+            f"강한 매도 합의: 복합점수 {score:.1f} ≤ {effective_sell:.1f}, "
+            f"동행 팩터 {negative_components}개, 평균회귀 {mean_reversion_bias:.1f}"
         )
     else:
         signal = Signal.HOLD
-        reason = f"확신 부족({confidence:.2f}) 또는 중립 | " + "; ".join(reasons[:2])
+        reason = "중립 또는 합의 부족 | " + "; ".join(reasons[:2])
+        suppress_log = True
 
     decision = Decision(
         market=market,
@@ -308,6 +279,8 @@ def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_
         signal=signal,
         reason=reason,
         quality=quality_score,
+        suppress_log=suppress_log,
     )
-    logger.debug("%s 신호: %s", market, decision)
+    if not decision.suppress_log:
+        logger.debug("%s 신호: %s", market, decision)
     return decision
