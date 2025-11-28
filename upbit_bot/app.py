@@ -192,25 +192,27 @@ class TradingBot:
 
     def _calculate_volume(self, decision: Decision) -> float:
         snapshot = self.account_snapshot or AccountSnapshot(krw_balance=self.krw_balance, holdings=[], total_value=self.krw_balance)
-        min_order_amount = 10000.0
+        min_net_amount = 10000.0
         fee_rate = self.fee_rate
+        min_volume = min_net_amount / (decision.price * (1 - fee_rate))
 
         if decision.signal == Signal.BUY:
             available_krw = snapshot.krw_balance if snapshot else self.krw_balance
-            if available_krw < min_order_amount:
+            min_cash_required = min_net_amount / (1 - fee_rate) * (1 + fee_rate)
+            if available_krw < min_cash_required:
                 logger.warning("가용 원화가 부족해 주문을 건너뜁니다. 보유: %.0f", available_krw)
                 return 0.0
-            min_required_amount = min_order_amount / (1 - fee_rate)
-            max_affordable_amount = available_krw / (1 + fee_rate)
-            if max_affordable_amount < min_required_amount:
+            max_affordable_volume = available_krw / (decision.price * (1 + fee_rate))
+            if max_affordable_volume < min_volume:
                 logger.warning("수수료를 고려하면 최소 주문금액을 충족할 수 없습니다. 보유: %.0f", available_krw)
                 return 0.0
             strength = max(decision.score, 0.0) / 100.0
             weight = 0.05 + (0.25 - 0.05) * strength  # 5~25% 비중 배정
-            base_amount = max(min_order_amount, available_krw * weight)
-            adjusted_amount = max(min_required_amount, base_amount)
-            order_amount = min(max_affordable_amount, adjusted_amount)
-            return order_amount / decision.price
+            target_amount = available_krw * weight
+            target_volume = target_amount / decision.price
+            volume = max(min_volume, target_volume)
+            volume = min(max_affordable_volume, volume)
+            return volume
 
         holdings = {h.market: h.balance for h in snapshot.holdings} if snapshot else self.positions
         available_volume = holdings.get(decision.market, self.positions.get(decision.market, 0.0))
@@ -219,13 +221,12 @@ class TradingBot:
             return 0.0
         sell_fraction = min(1.0, abs(decision.score) / 70)  # 신호 강도에 따라 최대 전량
         planned_volume = max(0.0, available_volume * sell_fraction)
-        min_sell_volume = min_order_amount / (decision.price * (1 - fee_rate))
-        if available_volume * decision.price * (1 - fee_rate) < min_order_amount:
+        if available_volume * decision.price * (1 - fee_rate) < min_net_amount:
             logger.warning("수수료를 고려하면 최소 주문금액을 충족할 수 없습니다: %s", decision.market)
             return 0.0
-        if planned_volume * decision.price * (1 - fee_rate) < min_order_amount:
-            planned_volume = min(available_volume, min_sell_volume)
-        return planned_volume
+        if planned_volume * decision.price * (1 - fee_rate) < min_net_amount:
+            planned_volume = max(min_volume, planned_volume)
+        return min(available_volume, planned_volume)
 
     def _apply_simulated_fill(self, decision: Decision, volume: float, *, fee_rate: float) -> None:
         amount = volume * decision.price
