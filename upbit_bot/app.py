@@ -93,6 +93,11 @@ class TradingBot:
             decision = base_decision
             ai_raw = ""
 
+            snapshot = self.account_snapshot
+            holdings = {h.market: h.balance for h in snapshot.holdings} if snapshot else self.positions
+            has_holding = holdings.get(market, 0.0) > 0
+            suppress_due_to_no_holding = False
+
             if self.use_ai:
                 ai_decision: AIDecision = evaluate_with_openai(
                     market,
@@ -106,7 +111,14 @@ class TradingBot:
 
             executed = False
             order_result: Optional[OrderResult] = None
-            if decision.signal != Signal.HOLD:
+            should_execute = decision.signal != Signal.HOLD
+            if decision.signal == Signal.SELL and not has_holding:
+                should_execute = False
+                suppress_due_to_no_holding = True
+            elif decision.signal == Signal.HOLD and not has_holding:
+                suppress_due_to_no_holding = True
+
+            if should_execute:
                 order_result = self.execute(decision)
                 executed = True
                 logger.info(
@@ -131,7 +143,7 @@ class TradingBot:
                     order_result=order_result,
                     timestamp=datetime.utcnow(),
                     account=self.account_snapshot,
-                    suppress_log=decision.suppress_log,
+                    suppress_log=decision.suppress_log or suppress_due_to_no_holding,
                 )
                 try:
                     self.on_update(update)
