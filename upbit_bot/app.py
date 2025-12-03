@@ -146,6 +146,14 @@ class TradingBot:
         self.state_store = state_store or SQLiteStateStore()
         self.state_store.ensure_schema()
         self.alert_sink = AlertSink()
+        self.global_enabled: bool = True
+        self.emergency_stop_active: bool = False
+        self.force_exit_on_stop: bool = False
+        self.strategy_switches: Dict[str, bool] = {
+            "trend": True,
+            "mean_reversion": True,
+            "breakout": True,
+        }
         self._recover_state()
 
     async def start(self) -> None:
@@ -223,12 +231,27 @@ class TradingBot:
 
             executed = False
             order_result: Optional[OrderResult] = None
+            if not self.global_enabled and decision.signal == Signal.BUY:
+                rejection_reason = rejection_reason or "전략 전체 OFF"
+            if not any(self.strategy_switches.values()) and decision.signal == Signal.BUY:
+                rejection_reason = rejection_reason or "모든 전략이 비활성화됨"
+            allow_emergency_sell = False
+            if self.emergency_stop_active:
+                if decision.signal == Signal.BUY:
+                    rejection_reason = rejection_reason or "긴급 정지: 신규 진입 차단"
+                elif decision.signal == Signal.SELL and has_holding:
+                    allow_emergency_sell = self.force_exit_on_stop
+                    if not allow_emergency_sell:
+                        rejection_reason = rejection_reason or "긴급 정지: 청산 대기"
             should_execute = decision.signal != Signal.HOLD and not rejection_reason
             if decision.signal == Signal.SELL and not has_holding:
                 should_execute = False
                 suppress_due_to_no_holding = True
             elif decision.signal == Signal.HOLD and not has_holding:
                 suppress_due_to_no_holding = True
+            if allow_emergency_sell:
+                should_execute = True
+                rejection_reason = None
 
             if rejection_reason:
                 decision = Decision(
@@ -353,6 +376,29 @@ class TradingBot:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def set_global_enabled(self, enabled: bool) -> None:
+        """전략 전체 ON/OFF 제어."""
+
+        self.global_enabled = enabled
+        if enabled:
+            # 글로벌 ON 시 긴급 정지 상태를 해제하고 신규 진입을 허용한다.
+            self.emergency_stop_active = False
+            self.force_exit_on_stop = False
+
+    def set_emergency_stop(self, *, active: bool, close_positions: bool = False) -> None:
+        """긴급 정지 설정.
+
+        Args:
+            active: 신규 주문 차단 여부.
+            close_positions: True일 때 기존 포지션 청산 허용.
+        """
+
+        self.emergency_stop_active = active
+        self.force_exit_on_stop = close_positions
+
+    def set_strategy_enabled(self, name: str, enabled: bool) -> None:
+        self.strategy_switches[name] = enabled
 
     def _compute_correlations(self, timeframe: str = "1h") -> Dict[str, Dict[str, float]]:
         series_map: Dict[str, pd.Series] = {}
