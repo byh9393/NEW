@@ -34,6 +34,7 @@ from upbit_bot.trading.executor import (
 )
 from upbit_bot.trading.exit_rules import evaluate_exit, compute_stop_targets
 from upbit_bot.trading.risk_portfolio import RiskLimits, RiskPortfolioManager
+from upbit_bot.storage import SQLiteStateStore
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ class TradingBot:
         openai_model: str = "gpt-4o-mini",
         on_update: Optional[Callable[[DecisionUpdate], None]] = None,
         fee_rate: float = 0.0005,
+        state_store: Optional[SQLiteStateStore] = None,
     ) -> None:
         self.markets: List[str] = list(markets)
         self.price_buffer = PriceBuffer(maxlen=maxlen)
@@ -127,6 +129,9 @@ class TradingBot:
                 universe_top_n=self.universe_top_n,
             )
         )
+        self.state_store = state_store or SQLiteStateStore()
+        self.state_store.ensure_schema()
+        self._recover_state()
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -323,6 +328,11 @@ class TradingBot:
             # 실거래 시 주문 응답에 포함된 예상 수수료를 누적 관리
             self.total_fees += result.fee
 
+        try:
+            self.state_store.record_order(order_result=result)
+        except Exception:
+            logger.exception("주문/체결 기록 실패")
+
         return result
 
     def stop(self) -> None:
@@ -411,6 +421,11 @@ class TradingBot:
             correlated_positions=correlated_count,
             universe_rank=volume_rank,
         )
+        if risk_reason:
+            try:
+                self.state_store.record_risk_event(market=market, reason=risk_reason)
+            except Exception:
+                logger.exception("리스크 이벤트 기록 실패")
         return risk_reason
 
     def _calculate_volume(self, decision: Decision, constraints: Optional[OrderChance]) -> OrderPlan:
@@ -555,7 +570,27 @@ class TradingBot:
                 snapshot.profit = profit
                 snapshot.profit_pct = profit_pct
             self.account_snapshot = snapshot
+        try:
+            if self.account_snapshot:
+                self.state_store.persist_snapshot(self.account_snapshot)
+        except Exception:
+            logger.exception("스냅샷 저장 실패")
         self._last_account_refresh = now
+
+    def _recover_state(self) -> None:
+        """로컬 스토어에 저장된 포지션/평단 정보를 활용해 시뮬레이션 세션을 복구한다."""
+        if not self.simulated:
+            return
+        try:
+            positions = self.state_store.load_positions()
+        except Exception:
+            logger.exception("상태 복구 실패")
+            return
+        for pos in positions:
+            self.positions[pos.market] = pos.volume
+            self.avg_price[pos.market] = pos.avg_price
+            if pos.opened_at:
+                self.position_entries[pos.market] = EntryMeta(entry_time=pos.opened_at, entry_price=pos.avg_price)
 
 
 async def main() -> None:
