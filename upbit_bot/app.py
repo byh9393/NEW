@@ -12,6 +12,7 @@ from datetime import datetime
 from time import time
 from typing import Callable, Dict, Iterable, List, Optional
 
+import numpy as np
 import pandas as pd
 
 from upbit_bot.data.market_fetcher import fetch_markets
@@ -19,6 +20,7 @@ from upbit_bot.data.stream import PriceBuffer
 from upbit_bot.data.ohlcv_service import OhlcvService
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
+from upbit_bot.strategy.multiframe import MultiTimeframeAnalyzer, MultiTimeframeFactor
 from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
 from upbit_bot.trading.executor import (
     OrderChance,
@@ -30,6 +32,8 @@ from upbit_bot.trading.executor import (
     _normalize_price,
     _normalize_volume,
 )
+from upbit_bot.trading.exit_rules import evaluate_exit, compute_stop_targets
+from upbit_bot.trading.risk_portfolio import RiskLimits, RiskPortfolioManager
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -56,6 +60,12 @@ class OrderPlan:
     volume: float
     logs: List[str]
     rejection_reason: Optional[str] = None
+
+
+@dataclass
+class EntryMeta:
+    entry_time: datetime
+    entry_price: float
 
 
 class TradingBot:
@@ -93,6 +103,30 @@ class TradingBot:
         self.daily_loss_limit_pct: float = float(os.environ.get("DAILY_LOSS_LIMIT_PCT", 5.0))
         self.required_timeframes: List[str] = ["1m", "5m", "15m", "1h", "4h", "1d"]
         self.ohlcv_service = OhlcvService(self.markets, price_buffer=self.price_buffer, timeframes=self.required_timeframes)
+        self.position_entries: Dict[str, EntryMeta] = {}
+        self.max_position_pct = float(os.environ.get("MAX_POSITION_PCT", 25.0))
+        self.max_portfolio_pct = float(os.environ.get("MAX_PORTFOLIO_PCT", 90.0))
+        self.max_drawdown_pct = float(os.environ.get("MAX_DRAWDOWN_PCT", 12.0))
+        self.max_entries_per_day = int(os.environ.get("MAX_ENTRIES_PER_DAY", 12))
+        self.max_entries_per_symbol = int(os.environ.get("MAX_ENTRIES_PER_SYMBOL", 3))
+        self.universe_top_n = int(os.environ.get("UNIVERSE_TOP_N", 10))
+        self.correlation_threshold = float(os.environ.get("CORRELATION_THRESHOLD", 0.8))
+        self.max_correlated_positions = int(os.environ.get("MAX_CORRELATED_POSITIONS", 3))
+        self.multi_analyzer = MultiTimeframeAnalyzer(timeframes=["5m", "15m", "1h", "4h", "1d"])
+        self.risk_manager = RiskPortfolioManager(
+            RiskLimits(
+                per_trade_risk_pct=self.per_trade_risk_pct,
+                max_position_pct=self.max_position_pct,
+                max_portfolio_pct=self.max_portfolio_pct,
+                daily_loss_limit_pct=self.daily_loss_limit_pct,
+                max_drawdown_pct=self.max_drawdown_pct,
+                correlation_threshold=self.correlation_threshold,
+                max_correlated_positions=self.max_correlated_positions,
+                max_entries_per_day=self.max_entries_per_day,
+                max_entries_per_symbol=self.max_entries_per_symbol,
+                universe_top_n=self.universe_top_n,
+            )
+        )
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -107,11 +141,21 @@ class TradingBot:
 
     async def _tick(self) -> None:
         self._refresh_account_snapshot()
+        correlation_map = self._compute_correlations()
+        volume_ranks = self._compute_universe_ranks()
         for market in self.markets:
-            series_map = self.ohlcv_service.get_multi_series(market, self.required_timeframes)
-            primary = series_map.get("5m") or series_map.get("1m") or pd.Series(dtype=float)
+            frames_map = self.ohlcv_service.get_multi_frames(market, self.required_timeframes)
+            primary_frame = frames_map.get("5m")
+            primary = primary_frame["close"] if primary_frame is not None and not primary_frame.empty else pd.Series(dtype=float)
             if primary.empty or len(primary) < 50:
                 continue
+
+            multi_factor = self.multi_analyzer.analyze(
+                market,
+                frames_map,
+                correlation=self._correlation_to_portfolio(market, correlation_map),
+            )
+
             base_decision = evaluate(market, primary)
             decision = base_decision
             ai_raw = ""
@@ -121,29 +165,68 @@ class TradingBot:
             has_holding = holdings.get(market, 0.0) > 0
             suppress_due_to_no_holding = False
 
+            if has_holding:
+                entry_price = self.avg_price.get(market, float(primary.iloc[-1]))
+                meta = self.position_entries.get(market)
+                exit_signal = evaluate_exit(primary, entry_price=entry_price, entry_time=meta.entry_time if meta else None)
+                if exit_signal.should_exit:
+                    decision = Decision(
+                        market=market,
+                        price=float(primary.iloc[-1]),
+                        score=decision.score,
+                        signal=Signal.SELL,
+                        reason=f"리스크 종료: {exit_signal.reason}",
+                        quality=decision.quality,
+                        suppress_log=False,
+                    )
+
             if self.use_ai:
                 ai_decision: AIDecision = evaluate_with_openai(
                     market,
                     primary,
                     api_key=self._openai_key,
                     model=self.openai_model,
-                    base_decision=base_decision,
+                    base_decision=decision,
                 )
                 decision = ai_decision.decision
                 ai_raw = ai_decision.raw_response
 
+            rejection_reason = self._validate_entry_filters(
+                market,
+                decision,
+                multi_factor,
+                primary,
+                volume_ranks.get(market),
+                correlation_map,
+            )
+
             executed = False
             order_result: Optional[OrderResult] = None
-            should_execute = decision.signal != Signal.HOLD
+            should_execute = decision.signal != Signal.HOLD and not rejection_reason
             if decision.signal == Signal.SELL and not has_holding:
                 should_execute = False
                 suppress_due_to_no_holding = True
             elif decision.signal == Signal.HOLD and not has_holding:
                 suppress_due_to_no_holding = True
 
+            if rejection_reason:
+                decision = Decision(
+                    market=market,
+                    price=float(primary.iloc[-1]),
+                    score=decision.score,
+                    signal=Signal.HOLD,
+                    reason=rejection_reason,
+                    quality=decision.quality,
+                    suppress_log=True,
+                )
+
             if should_execute:
                 order_result = self.execute(decision)
                 executed = True
+                if decision.signal == Signal.BUY:
+                    self.risk_manager.register_entry(market)
+                else:
+                    self.risk_manager.register_exit(market)
                 logger.info(
                     "%s -> %s (점수 %.1f): %s | AI=%s",
                     market,
@@ -245,6 +328,91 @@ class TradingBot:
     def stop(self) -> None:
         self.stop_event.set()
 
+    def _compute_correlations(self, timeframe: str = "1h") -> Dict[str, Dict[str, float]]:
+        series_map: Dict[str, pd.Series] = {}
+        for market in self.markets:
+            series = self.ohlcv_service.get_series(market, timeframe)
+            if series is not None and not series.empty:
+                series_map[market] = series.pct_change().dropna().tail(120)
+        if not series_map:
+            return {}
+        df = pd.DataFrame(series_map).dropna(how="all")
+        if df.empty:
+            return {}
+        corr = df.corr()
+        return {c1: {c2: float(corr.loc[c1, c2]) for c2 in corr.columns if c1 != c2} for c1 in corr.columns}
+
+    def _correlation_to_portfolio(self, market: str, correlation_map: Dict[str, Dict[str, float]]) -> Optional[float]:
+        if not correlation_map:
+            return None
+        holdings = self.account_snapshot.holdings if self.account_snapshot else []
+        others = [h.market for h in holdings if h.market != market] if holdings else [m for m in self.positions.keys() if m != market]
+        if not others:
+            return None
+        corr_row = correlation_map.get(market, {})
+        values = [abs(corr_row.get(o, 0.0)) for o in others if o in corr_row]
+        return float(np.mean(values)) if values else None
+
+    def _count_correlated_positions(self, market: str, correlation_map: Dict[str, Dict[str, float]]) -> int:
+        corr_row = correlation_map.get(market, {})
+        holdings = self.account_snapshot.holdings if self.account_snapshot else []
+        symbols = [h.market for h in holdings] if holdings else list(self.positions.keys())
+        return sum(1 for sym in symbols if sym != market and abs(corr_row.get(sym, 0.0)) >= self.correlation_threshold)
+
+    def _compute_universe_ranks(self) -> Dict[str, int]:
+        volumes: Dict[str, float] = {}
+        for market in self.markets:
+            frame = self.ohlcv_service.get_frame(market, "1d")
+            if frame is None or frame.empty:
+                continue
+            latest = frame.iloc[-1]
+            turnover = float(latest.get("close", 0.0) * latest.get("volume", 0.0))
+            volumes[market] = turnover
+        ranked = sorted(volumes.items(), key=lambda kv: kv[1], reverse=True)
+        return {market: idx + 1 for idx, (market, _) in enumerate(ranked)}
+
+    def _validate_entry_filters(
+        self,
+        market: str,
+        decision: Decision,
+        multi_factor: MultiTimeframeFactor,
+        primary: pd.Series,
+        volume_rank: Optional[int],
+        correlation_map: Dict[str, Dict[str, float]],
+    ) -> Optional[str]:
+        if decision.signal != Signal.BUY:
+            return None
+
+        higher_trend_scores = [multi_factor.trend_by_tf.get(tf, 0.5) for tf in ("1h", "4h", "1d")]
+        higher_trend = float(np.mean([s for s in higher_trend_scores if s is not None] or [multi_factor.trend]))
+        if higher_trend < 0.55:
+            return f"상위 추세 필터 미충족 ({higher_trend:.2f})"
+
+        last_price = float(primary.iloc[-1])
+        stop_loss, take_profit = compute_stop_targets(primary, last_price)
+        stop_distance = last_price - stop_loss
+        target_distance = take_profit - last_price
+        if stop_distance <= 0 or target_distance / max(stop_distance, 1e-6) < 1.2:
+            return "ATR 대비 목표/손절 리스크-리워드 미충족"
+
+        if volume_rank and volume_rank > self.universe_top_n:
+            return f"거래대금 상위 {self.universe_top_n}개 외 종목"
+
+        if multi_factor.composite < 0.52 or multi_factor.momentum < 0.45 or multi_factor.trend < 0.5:
+            return (
+                f"팩터 엔진 합성점수 부족 (합성 {multi_factor.composite:.2f}/"
+                f"추세 {multi_factor.trend:.2f}/모멘텀 {multi_factor.momentum:.2f})"
+            )
+
+        correlated_count = self._count_correlated_positions(market, correlation_map)
+        risk_reason = self.risk_manager.validate_entry(
+            market=market,
+            snapshot=self.account_snapshot,
+            correlated_positions=correlated_count,
+            universe_rank=volume_rank,
+        )
+        return risk_reason
+
     def _calculate_volume(self, decision: Decision, constraints: Optional[OrderChance]) -> OrderPlan:
         logs: List[str] = []
         snapshot = self.account_snapshot or AccountSnapshot(
@@ -326,6 +494,7 @@ class TradingBot:
             avg_price = (prev_value + total_cost) / new_volume if new_volume else decision.price
             self.positions[decision.market] = new_volume
             self.avg_price[decision.market] = avg_price
+            self.position_entries[decision.market] = EntryMeta(entry_time=datetime.utcnow(), entry_price=avg_price)
         else:
             proceeds = amount - fee
             self.krw_balance += proceeds
@@ -334,6 +503,7 @@ class TradingBot:
             if remaining == 0:
                 self.positions.pop(decision.market, None)
                 self.avg_price.pop(decision.market, None)
+                self.position_entries.pop(decision.market, None)
             else:
                 self.positions[decision.market] = remaining
 
