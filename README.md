@@ -10,6 +10,8 @@ Python 기반으로 업비트 거래소 모든 원화마켓을 실시간 추적�
 - **OpenAI 강화 판단**: 기본 전략 결과와 확장된 지표 요약을 GPT-4o-mini 등에 전달해 전문가형 BUY/SELL/HOLD 결정을 JSON으로 회신받아 실행합니다.
 - **주문 실행**: 환경 변수 `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`가 없을 경우 모의주문으로 안전하게 동작합니다.
 - **계좌 모니터링**: GUI에서 실시간 원화 잔고와 보유 종목, 평가액을 확인할 수 있습니다.
+- **상태 저장/복구**: SQLite 로컬 DB에 계좌 스냅샷·포지션·주문/체결·리스크 이벤트·설정 변경 내역을 기록하여 재시작 시 포지션과 평균단가를 즉시 복구합니다.
+- **백테스트 엔진**: 실거래와 동일한 전략/리스크 로직을 공유하는 `BacktestEngine`을 통해 수수료·슬리피지·최소 주문금액을 반영한 포트폴리오 시뮬레이션과 MDD/Sharpe/Profit Factor 지표를 산출합니다.
 
 ## 설치
 ```bash
@@ -26,6 +28,23 @@ python -m upbit_bot.app
 PySide6 기반 카드형 그리드 대시보드를 통해 Tkinter GUI에서 제공하던 거래 시작/종료, 모의주문·OpenAI 판단 토글, 신호·가격·계좌·로그 확인 기능을 모두 사용할 수 있습니다. 컬럼 정렬·필터·검색, 다크/라이트 테마 전환, 주문/에러 알림 배너, 즐겨찾기 핀, 계좌/차트/로그를 한 화면에서 확인하세요.
 ```bash
 python -m upbit_bot.ui.desktop
+```
+
+## 백테스트 실행 예시
+`BacktestEngine`으로 다중 종목 OHLCV를 검증할 수 있습니다.
+
+```python
+import pandas as pd
+from upbit_bot.backtest import BacktestEngine, BacktestConfig
+
+data = {
+    "KRW-BTC": pd.read_csv("btc_5m.csv", parse_dates=["timestamp"], index_col="timestamp"),
+    "KRW-ETH": pd.read_csv("eth_5m.csv", parse_dates=["timestamp"], index_col="timestamp"),
+}
+
+engine = BacktestEngine(BacktestConfig(initial_cash=2_000_000, slippage_pct=0.05))
+result = engine.run(data)
+print(result.stats)
 ```
 
 PySide6 기반 카드형 그리드 UI 데스크톱 대시보드를 이용해 컬럼 정렬·필터·검색, 다크/라이트 테마 전환, 주문·에러 알림 배너, 즐겨찾기 핀, 계좌/차트/로그를 한 화면에서 확인할 수 있습니다.
@@ -46,4 +65,4 @@ python -m upbit_bot.ui.desktop
 ## 실제 주문 사용 시 주의
 - 실거래를 활성화하려면 환경 변수에 업비트 API 키를 설정하고 `TradingBot(simulated=False)`로 생성하거나 `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`를 주입하세요.
 - 자동매매는 원금 손실 위험이 있습니다. 본 코드는 참고용이며, 실제 자금 운용 전 충분한 테스트와 리스크 관리가 필요합니다.
-- 업비트는 5,000원 미만 주문이 불가능하며, 본 봇은 안전을 위해 **최소 10,000원 이상**만 주문합니다. 매수 시 신호 강도를 반영해 원화 잔고 대비 5~25% 비중으로 자동 배분합니다.
+- 업비트는 5,000원 미만 주문이 불가능하며, 본 봇은 안전을 위해 **실제 최소 주문금액 = max(봇 내부 30,000원, 거래소 min_total)**을 적용합니다. 매수 시 신호 강도를 반영해 원화 잔고 대비 5~25% 비중으로 자동 배분합니다.
