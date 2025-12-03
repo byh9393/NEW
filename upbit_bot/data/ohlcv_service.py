@@ -18,15 +18,14 @@ from pathlib import Path
 from typing import Deque, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
-import requests
 import websockets
 
 from upbit_bot.data.stream import PriceBuffer
+from upbit_bot.data.upbit_adapter import UpbitAdapter
 
 logger = logging.getLogger(__name__)
 
 UPBIT_WS_ENDPOINT = "wss://api.upbit.com/websocket/v1"
-BASE_REST_URL = "https://api.upbit.com/v1/candles"
 
 # 타임프레임 문자열 -> (kind, unit, seconds)
 _TIMEFRAME_MAP: Dict[str, Tuple[str, int, int]] = {
@@ -82,6 +81,7 @@ class OhlcvService:
         timeframes: Iterable[str] = ("1m", "3m", "5m", "15m", "1h", "4h", "1d"),
         window: int = 800,
         cache_dir: str | Path = "./.cache/ohlcv",
+        adapter: Optional[UpbitAdapter] = None,
     ) -> None:
         self.markets = list(markets)
         self.price_buffer = price_buffer or PriceBuffer(maxlen=1000)
@@ -93,6 +93,7 @@ class OhlcvService:
             lambda: {tf: deque(maxlen=self.window) for tf in self.timeframes}
         )
         self._stop_event = asyncio.Event()
+        self.adapter = adapter or UpbitAdapter()
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         """웹소켓/REST 백그라운드 태스크를 실행한다."""
@@ -257,11 +258,12 @@ class OhlcvService:
 
     def _fetch_rest_candles(self, market: str, timeframe: str, *, count: int = 200) -> List[Candle]:
         kind, unit, _ = _TIMEFRAME_MAP[timeframe]
-        url = f"{BASE_REST_URL}/{kind}/{unit}" if kind == "minutes" else f"{BASE_REST_URL}/{kind}"
-        params = {"market": market, "count": min(count, 200)}
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        raw: List[dict] = response.json()
+        raw: List[dict] = self.adapter.candles(
+            market=market,
+            kind=kind,
+            unit=unit,
+            count=min(count, 200),
+        )
         candles: List[Candle] = []
         for item in raw:
             start_str = item.get("candle_date_time_utc") or item.get("candle_date_time_kst")
