@@ -1,14 +1,17 @@
 import math
 import sys
+import math
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from upbit_bot.app import TradingBot, OrderPlan
+from upbit_bot.app import OrderPlan, TradingBot
+from upbit_bot.storage import SQLiteStateStore
 from upbit_bot.strategy.composite import Decision, Signal
+from upbit_bot.trading.account import AccountSnapshot, Holding
 from upbit_bot.trading.executor import OrderChance, place_order, validate_order
-from upbit_bot.trading.account import AccountSnapshot
 
 
 def test_validate_order_enforces_minimum_total():
@@ -79,3 +82,26 @@ def test_place_order_handles_partial_fill_and_retry():
     assert math.isclose(result.volume, 1.0)
     assert len(result.raw.get("attempts", [])) == 2
     assert any("부분 체결" in log for log in result.validation_logs)
+
+
+def test_state_store_persists_snapshot_and_positions(tmp_path):
+    store = SQLiteStateStore(db_path=tmp_path / "state.db")
+    store.ensure_schema()
+    holdings = [
+        Holding(market="KRW-BTC", currency="BTC", balance=0.5, avg_buy_price=10_000.0, estimated_krw=5_000.0)
+    ]
+    snapshot = AccountSnapshot(
+        krw_balance=100_000.0,
+        holdings=holdings,
+        total_value=105_000.0,
+        total_fee=500.0,
+        profit=5_000.0,
+        profit_pct=5.0,
+    )
+
+    store.persist_snapshot(snapshot)
+    positions = store.load_positions()
+
+    assert len(positions) == 1
+    assert positions[0].market == "KRW-BTC"
+    assert math.isclose(positions[0].avg_price, 10_000.0)
