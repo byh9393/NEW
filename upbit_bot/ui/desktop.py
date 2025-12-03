@@ -220,7 +220,7 @@ class SignalFilterProxy(QSortFilterProxyModel):
 
     def set_query(self, text: str) -> None:
         self._query = text.lower()
-        self.invalidateFilter()
+        self.invalidate()
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # noqa: N802
         if not self._query:
@@ -652,7 +652,7 @@ class DesktopDashboard(QMainWindow):
 
     def _handle_update(self, update: DecisionUpdate) -> None:
         self.signal_model.upsert(update)
-        self.proxy_model.invalidateFilter()
+        self.proxy_model.invalidate()
         self.price_history[update.market].append(update.price)
         if self.chart_selector.findText(update.market) == -1:
             self.chart_selector.addItem(update.market)
@@ -712,17 +712,17 @@ class DesktopDashboard(QMainWindow):
     def _refresh_chart(self) -> None:
         market = self.chart_selector.currentText()
         self.ax.clear()
-        self.ax.set_title(market or "마켓 선택")
+        self.ax.set_title(market or "Select Market")
         if market and market in self.price_history:
             prices = list(self.price_history[market])
-            self.ax.plot(prices, color="tab:blue", label="가격")
+            self.ax.plot(prices, color="tab:blue", label="Price")
             if len(prices) > 5:
                 window = 5
                 ma = [sum(prices[i - window:i]) / window for i in range(window, len(prices) + 1)]
-                self.ax.plot(range(window - 1, len(prices)), ma, color="orange", label="단기 MA")
-                self.ax.scatter(len(prices) - 1, prices[-1], color="green", marker="^", label="매수/매도 마커")
-        self.ax.set_xlabel("틱")
-        self.ax.set_ylabel("가격")
+                self.ax.plot(range(window - 1, len(prices)), ma, color="orange", label="Short MA")
+                self.ax.scatter(len(prices) - 1, prices[-1], color="green", marker="^", label="Entry/Exit")
+        self.ax.set_xlabel("Tick")
+        self.ax.set_ylabel("Price")
         self.ax.legend(loc="upper left")
         self.ax.grid(True, alpha=0.3)
         self.canvas.draw_idle()
@@ -742,7 +742,7 @@ class DesktopDashboard(QMainWindow):
         _ = self.heatmap_ax.imshow(matrix, cmap="coolwarm")
         self.heatmap_ax.set_xticks([])
         self.heatmap_ax.set_yticks([])
-        self.heatmap_ax.set_title("점수 Heatmap")
+        self.heatmap_ax.set_title("Score Heatmap")
         for idx, score in enumerate(scores):
             y, x = divmod(idx, size)
             self.heatmap_ax.text(x, y, f"{markets[idx].market}\n{score:.1f}", ha="center", va="center", color="black")
@@ -752,8 +752,8 @@ class DesktopDashboard(QMainWindow):
         self.equity_ax.clear()
         if self.equity_history:
             self.equity_ax.plot(list(self.equity_history), color="tab:green")
-        self.equity_ax.set_xlabel("업데이트")
-        self.equity_ax.set_ylabel("총자산")
+        self.equity_ax.set_xlabel("Update")
+        self.equity_ax.set_ylabel("Total Asset")
         self.equity_ax.grid(True, alpha=0.2)
         self.equity_canvas.draw_idle()
 
