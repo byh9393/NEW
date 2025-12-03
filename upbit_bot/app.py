@@ -19,7 +19,16 @@ from upbit_bot.data.stream import PriceBuffer, run_stream
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
 from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
-from upbit_bot.trading.executor import OrderResult, place_order
+from upbit_bot.trading.executor import (
+    OrderChance,
+    OrderResult,
+    fetch_order_chance,
+    place_order,
+    validate_order,
+    _infer_tick_size,
+    _normalize_price,
+    _normalize_volume,
+)
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -38,6 +47,14 @@ class DecisionUpdate:
     timestamp: datetime
     account: Optional[AccountSnapshot]
     suppress_log: bool
+
+
+@dataclass
+class OrderPlan:
+    price: float
+    volume: float
+    logs: List[str]
+    rejection_reason: Optional[str] = None
 
 
 class TradingBot:
@@ -70,6 +87,9 @@ class TradingBot:
         self.fee_rate = fee_rate
         self.total_fees: float = 0.0
         self.initial_value: Optional[float] = None
+        self.max_slippage_pct: float = float(os.environ.get("MAX_SLIPPAGE_PCT", 0.5))
+        self.per_trade_risk_pct: float = float(os.environ.get("PER_TRADE_RISK_PCT", 1.0))
+        self.daily_loss_limit_pct: float = float(os.environ.get("DAILY_LOSS_LIMIT_PCT", 5.0))
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
@@ -152,19 +172,50 @@ class TradingBot:
 
     def execute(self, decision: Decision) -> OrderResult:
         side = "bid" if decision.signal == Signal.BUY else "ask"
-        volume = self._calculate_volume(decision)
-        if volume <= 0:
+        constraints = (
+            fetch_order_chance(access_key=self._access, secret_key=self._secret, market=decision.market)
+            if self._access and self._secret
+            else None
+        )
+        plan = self._calculate_volume(decision, constraints)
+        if plan.volume <= 0 or plan.rejection_reason:
             return OrderResult(
                 False,
                 side,
                 decision.market,
                 0.0,
-                decision.price,
+                plan.price,
                 raw={},
                 fee=0.0,
                 net_amount=0.0,
                 fee_rate=self.fee_rate,
-                error="주문 조건 불충족",
+                error=plan.rejection_reason or "주문 조건 불충족",
+                validation_logs=plan.logs,
+                rejection_reason=plan.rejection_reason or "주문 조건 불충족",
+            )
+
+        validation = validate_order(
+            side=side,
+            price=plan.price,
+            volume=plan.volume,
+            constraints=constraints,
+            simulated=self.simulated or not self._access or not self._secret,
+        )
+        logs = plan.logs + validation.logs
+        if not validation.ok:
+            return OrderResult(
+                False,
+                side,
+                decision.market,
+                0.0,
+                plan.price,
+                raw={},
+                fee=0.0,
+                net_amount=0.0,
+                fee_rate=self.fee_rate,
+                error=validation.rejection_reason or "주문 조건 불충족",
+                validation_logs=logs,
+                rejection_reason=validation.rejection_reason or "주문 조건 불충족",
             )
 
         result = place_order(
@@ -172,14 +223,15 @@ class TradingBot:
             secret_key=self._secret,
             market=decision.market,
             side=side,
-            volume=volume,
-            price=decision.price,
+            volume=plan.volume,
+            price=plan.price,
             simulated=self.simulated or not self._access or not self._secret,
             fee_rate=self.fee_rate,
+            validation_logs=logs,
         )
 
         if result.success and (self.simulated or not self._access or not self._secret):
-            self._apply_simulated_fill(decision, volume, fee_rate=self.fee_rate)
+            self._apply_simulated_fill(decision, result.volume, price=plan.price, fee_rate=self.fee_rate)
 
         if result.success and not (self.simulated or not self._access or not self._secret):
             # 실거래 시 주문 응답에 포함된 예상 수수료를 누적 관리
@@ -190,46 +242,75 @@ class TradingBot:
     def stop(self) -> None:
         self.stop_event.set()
 
-    def _calculate_volume(self, decision: Decision) -> float:
-        snapshot = self.account_snapshot or AccountSnapshot(krw_balance=self.krw_balance, holdings=[], total_value=self.krw_balance)
-        min_net_amount = 10000.0
+    def _calculate_volume(self, decision: Decision, constraints: Optional[OrderChance]) -> OrderPlan:
+        logs: List[str] = []
+        snapshot = self.account_snapshot or AccountSnapshot(
+            krw_balance=self.krw_balance, holdings=[], total_value=self.krw_balance
+        )
         fee_rate = self.fee_rate
-        min_volume = min_net_amount / (decision.price * (1 - fee_rate))
+        tick_size = constraints.tick_size if constraints else _infer_tick_size(decision.price)
+        price = _normalize_price(decision.price, tick_size)
+        slippage_limit = self.max_slippage_pct / 100.0
+        last_price = self.price_buffer.latest(decision.market)
+        if last_price and last_price > 0:
+            slippage = abs(price - last_price) / last_price
+            if slippage > slippage_limit:
+                reason = f"슬리피지 {slippage*100:.2f}%가 한도 {self.max_slippage_pct:.2f}%를 초과"
+                return OrderPlan(price=price, volume=0.0, logs=[reason], rejection_reason=reason)
+
+        if snapshot and snapshot.profit_pct <= -self.daily_loss_limit_pct:
+            reason = f"일일 손실 한도 {self.daily_loss_limit_pct:.2f}%를 초과하여 거래 중지"
+            return OrderPlan(price=price, volume=0.0, logs=[reason], rejection_reason=reason)
+
+        if constraints:
+            min_total_exchange = constraints.bid_min_total if decision.signal == Signal.BUY else constraints.ask_min_total
+        else:
+            min_total_exchange = 0.0
+        min_total = max(30_000.0, min_total_exchange)
+        min_volume = min_total / (price * (1 - fee_rate))
+        equity = snapshot.total_value if snapshot else self.krw_balance
+        risk_cap_amount = equity * (self.per_trade_risk_pct / 100.0)
 
         if decision.signal == Signal.BUY:
             available_krw = snapshot.krw_balance if snapshot else self.krw_balance
-            min_cash_required = min_net_amount / (1 - fee_rate) * (1 + fee_rate)
+            min_cash_required = min_total / (1 - fee_rate) * (1 + fee_rate)
             if available_krw < min_cash_required:
-                logger.warning("가용 원화가 부족해 주문을 건너뜁니다. 보유: %.0f", available_krw)
-                return 0.0
-            max_affordable_volume = available_krw / (decision.price * (1 + fee_rate))
+                reason = f"가용 원화 {available_krw:.0f}원이 최소 요구금액 {min_cash_required:.0f}원 미만"
+                return OrderPlan(price=price, volume=0.0, logs=[reason], rejection_reason=reason)
+            max_affordable_volume = available_krw / (price * (1 + fee_rate))
             if max_affordable_volume < min_volume:
-                logger.warning("수수료를 고려하면 최소 주문금액을 충족할 수 없습니다. 보유: %.0f", available_krw)
-                return 0.0
+                reason = "수수료를 고려하면 최소 주문금액을 충족할 수 없습니다."
+                return OrderPlan(price=price, volume=0.0, logs=[reason], rejection_reason=reason)
             strength = max(decision.score, 0.0) / 100.0
             weight = 0.05 + (0.25 - 0.05) * strength  # 5~25% 비중 배정
-            target_amount = available_krw * weight
-            target_volume = target_amount / decision.price
+            target_amount = min(available_krw * weight, risk_cap_amount)
+            target_volume = target_amount / price
             volume = max(min_volume, target_volume)
             volume = min(max_affordable_volume, volume)
-            return volume
+        else:
+            holdings = {h.market: h.balance for h in snapshot.holdings} if snapshot else self.positions
+            available_volume = holdings.get(decision.market, self.positions.get(decision.market, 0.0))
+            if available_volume <= 0:
+                reason = f"보유 물량 없음: {decision.market}"
+                return OrderPlan(price=price, volume=0.0, logs=[reason], rejection_reason=reason)
+            sell_fraction = min(1.0, abs(decision.score) / 70)  # 신호 강도에 따라 최대 전량
+            planned_volume = max(0.0, available_volume * sell_fraction)
+            if available_volume * price * (1 - fee_rate) < min_total:
+                reason = "보유 자산이 최소 주문금액에 미달"
+                return OrderPlan(price=price, volume=0.0, logs=[reason], rejection_reason=reason)
+            volume = min(available_volume, planned_volume)
+            risk_cap_volume = risk_cap_amount / price if risk_cap_amount > 0 else volume
+            volume = min(volume, risk_cap_volume)
 
-        holdings = {h.market: h.balance for h in snapshot.holdings} if snapshot else self.positions
-        available_volume = holdings.get(decision.market, self.positions.get(decision.market, 0.0))
-        if available_volume <= 0:
-            logger.warning("보유 물량이 없어 매도 주문을 건너뜁니다: %s", decision.market)
-            return 0.0
-        sell_fraction = min(1.0, abs(decision.score) / 70)  # 신호 강도에 따라 최대 전량
-        planned_volume = max(0.0, available_volume * sell_fraction)
-        if available_volume * decision.price * (1 - fee_rate) < min_net_amount:
-            logger.warning("수수료를 고려하면 최소 주문금액을 충족할 수 없습니다: %s", decision.market)
-            return 0.0
-        if planned_volume * decision.price * (1 - fee_rate) < min_net_amount:
-            planned_volume = max(min_volume, planned_volume)
-        return min(available_volume, planned_volume)
+        volume = _normalize_volume(volume)
+        if price * volume < min_total:
+            reason = "정규화 후 주문금액이 최소 기준에 미달"
+            return OrderPlan(price=price, volume=0.0, logs=[reason], rejection_reason=reason)
 
-    def _apply_simulated_fill(self, decision: Decision, volume: float, *, fee_rate: float) -> None:
-        amount = volume * decision.price
+        return OrderPlan(price=price, volume=volume, logs=logs)
+
+    def _apply_simulated_fill(self, decision: Decision, volume: float, *, price: float, fee_rate: float) -> None:
+        amount = volume * price
         fee = amount * fee_rate
         self.total_fees += fee
         if decision.signal == Signal.BUY:
