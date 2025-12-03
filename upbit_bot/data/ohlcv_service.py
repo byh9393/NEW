@@ -124,6 +124,22 @@ class OhlcvService:
     def get_multi_series(self, market: str, timeframes: Iterable[str]) -> Dict[str, pd.Series]:
         return {tf: self.get_series(market, tf) for tf in timeframes if tf in self.timeframes}
 
+    def get_frame(self, market: str, timeframe: str) -> pd.DataFrame:
+        candles = list(self._candles.get(market, {}).get(timeframe, []))
+        if not candles:
+            return pd.DataFrame()
+        data = {
+            "open": [c.open for c in candles],
+            "high": [c.high for c in candles],
+            "low": [c.low for c in candles],
+            "close": [c.close for c in candles],
+            "volume": [c.volume for c in candles],
+        }
+        return pd.DataFrame(data, index=[c.start for c in candles])
+
+    def get_multi_frames(self, market: str, timeframes: Iterable[str]) -> Dict[str, pd.DataFrame]:
+        return {tf: self.get_frame(market, tf) for tf in timeframes if tf in self.timeframes}
+
     async def _websocket_loop(self) -> None:
         backoff = 1
         subscribe_payload = [
