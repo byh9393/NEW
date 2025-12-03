@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import time
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -18,6 +18,7 @@ import pandas as pd
 from upbit_bot.data.market_fetcher import fetch_markets
 from upbit_bot.data.stream import PriceBuffer
 from upbit_bot.data.ohlcv_service import OhlcvService
+from upbit_bot.data.universe import UniverseManager
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
 from upbit_bot.strategy.multiframe import MultiTimeframeAnalyzer, MultiTimeframeFactor
@@ -35,6 +36,7 @@ from upbit_bot.trading.executor import (
 from upbit_bot.trading.exit_rules import evaluate_exit, compute_stop_targets
 from upbit_bot.trading.risk_portfolio import RiskLimits, RiskPortfolioManager
 from upbit_bot.storage import SQLiteStateStore
+from upbit_bot.monitoring.alerts import AlertSink, AlertMessage, Severity
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -114,6 +116,11 @@ class TradingBot:
         self.universe_top_n = int(os.environ.get("UNIVERSE_TOP_N", 10))
         self.correlation_threshold = float(os.environ.get("CORRELATION_THRESHOLD", 0.8))
         self.max_correlated_positions = int(os.environ.get("MAX_CORRELATED_POSITIONS", 3))
+        self.min_30d_turnover = float(os.environ.get("MIN_30D_AVG_TURNOVER", 1_000_000_000))
+        self.max_spread_pct = float(os.environ.get("MAX_SPREAD_PCT", 2.0))
+        self.universe_refresh_interval = timedelta(
+            seconds=int(os.environ.get("UNIVERSE_REFRESH_SEC", 3600))
+        )
         self.multi_analyzer = MultiTimeframeAnalyzer(timeframes=["5m", "15m", "1h", "4h", "1d"])
         self.risk_manager = RiskPortfolioManager(
             RiskLimits(
@@ -129,8 +136,16 @@ class TradingBot:
                 universe_top_n=self.universe_top_n,
             )
         )
+        self.universe_manager = UniverseManager(
+            min_30d_avg_turnover=self.min_30d_turnover,
+            max_spread_pct=self.max_spread_pct / 100.0,
+            top_n=self.universe_top_n,
+            refresh_interval=self.universe_refresh_interval,
+        )
+        self.active_markets: List[str] = list(self.markets)
         self.state_store = state_store or SQLiteStateStore()
         self.state_store.ensure_schema()
+        self.alert_sink = AlertSink()
         self._recover_state()
 
     async def start(self) -> None:
@@ -146,9 +161,10 @@ class TradingBot:
 
     async def _tick(self) -> None:
         self._refresh_account_snapshot()
+        self._refresh_universe()
         correlation_map = self._compute_correlations()
         volume_ranks = self._compute_universe_ranks()
-        for market in self.markets:
+        for market in self.active_markets:
             frames_map = self.ohlcv_service.get_multi_frames(market, self.required_timeframes)
             primary_frame = frames_map.get("5m")
             primary = primary_frame["close"] if primary_frame is not None and not primary_frame.empty else pd.Series(dtype=float)
@@ -370,6 +386,11 @@ class TradingBot:
         return sum(1 for sym in symbols if sym != market and abs(corr_row.get(sym, 0.0)) >= self.correlation_threshold)
 
     def _compute_universe_ranks(self) -> Dict[str, int]:
+        snapshot = self.universe_manager.last_snapshot
+        if snapshot:
+            ranked = sorted(snapshot.turnover_24h.items(), key=lambda kv: kv[1], reverse=True)
+            return {market: idx + 1 for idx, (market, _) in enumerate(ranked)}
+
         volumes: Dict[str, float] = {}
         for market in self.markets:
             frame = self.ohlcv_service.get_frame(market, "1d")
@@ -380,6 +401,38 @@ class TradingBot:
             volumes[market] = turnover
         ranked = sorted(volumes.items(), key=lambda kv: kv[1], reverse=True)
         return {market: idx + 1 for idx, (market, _) in enumerate(ranked)}
+
+    def _refresh_universe(self) -> None:
+        if not self.universe_manager.should_refresh():
+            return
+        frames = {m: self.ohlcv_service.get_frame(m, "1d") for m in self.markets}
+        snapshot = self.universe_manager.refresh(
+            markets=self.markets,
+            frame_lookup=frames,
+            fetch_spread_if_missing=False,
+        )
+        self.active_markets = snapshot.eligible or list(self.markets)
+        reason = (
+            f"유니버스 갱신: {len(self.active_markets)}/{len(self.markets)}개 채택, "
+            f"최소 30일 평균 거래대금 {self.min_30d_turnover:,.0f}, 스프레드 {self.max_spread_pct:.2f}%"
+        )
+        self._notify_risk_event("*", reason)
+
+    def _notify_risk_event(self, market: str, reason: str) -> None:
+        try:
+            self.state_store.record_risk_event(market=market, reason=reason)
+        except Exception:
+            logger.exception("리스크 이벤트 기록 실패")
+        try:
+            self.alert_sink.notify(
+                AlertMessage(
+                    title=f"리스크 이벤트 - {market}",
+                    detail=reason,
+                    severity=Severity.WARNING,
+                )
+            )
+        except Exception:
+            logger.exception("알림 전송 실패")
 
     def _validate_entry_filters(
         self,
@@ -422,10 +475,7 @@ class TradingBot:
             universe_rank=volume_rank,
         )
         if risk_reason:
-            try:
-                self.state_store.record_risk_event(market=market, reason=risk_reason)
-            except Exception:
-                logger.exception("리스크 이벤트 기록 실패")
+            self._notify_risk_event(market, risk_reason)
         return risk_reason
 
     def _calculate_volume(self, decision: Decision, constraints: Optional[OrderChance]) -> OrderPlan:

@@ -12,6 +12,8 @@ Python 기반으로 업비트 거래소 모든 원화마켓을 실시간 추적�
 - **계좌 모니터링**: GUI에서 실시간 원화 잔고와 보유 종목, 평가액을 확인할 수 있습니다.
 - **상태 저장/복구**: SQLite 로컬 DB에 계좌 스냅샷·포지션·주문/체결·리스크 이벤트·설정 변경 내역을 기록하여 재시작 시 포지션과 평균단가를 즉시 복구합니다.
 - **백테스트 엔진**: 실거래와 동일한 전략/리스크 로직을 공유하는 `BacktestEngine`을 통해 수수료·슬리피지·최소 주문금액을 반영한 포트폴리오 시뮬레이션과 MDD/Sharpe/Profit Factor 지표를 산출합니다.
+- **동적 유니버스 관리**: 30일 평균 일 거래대금이 기준치 이상이고 호가 스프레드가 좁은 종목만 남기며, 24시간 거래대금 상위 N개로 자동 제한합니다.
+- **알림**: Slack/Telegram 웹훅으로 리스크 이벤트나 주문 거절을 통지할 수 있으며, 환경 변수로 손쉽게 끄고 켤 수 있습니다.
 
 ## 설치
 ```bash
@@ -58,9 +60,16 @@ python -m upbit_bot.ui.desktop
   OPENAI_API_KEY=your-openai-api-key
   UPBIT_ACCESS_KEY=your-upbit-access-key
   UPBIT_SECRET_KEY=your-upbit-secret-key
+  MIN_30D_AVG_TURNOVER=1000000000  # 30일 평균 일 거래대금 하한
+  MAX_SPREAD_PCT=2.0               # 허용 스프레드(%)
+  SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
+  TELEGRAM_BOT_TOKEN=token
+  TELEGRAM_CHAT_ID=12345678
   ```
 - `OPENAI_API_KEY`: OpenAI 모델 호출에 사용. 설정되어 있으면 LLM이 기본 기술적 판단을 보강합니다.
 - `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`: 실거래 주문용 업비트 API 키. 둘 다 없으면 모의주문으로 실행합니다.
+ - `MIN_30D_AVG_TURNOVER`, `MAX_SPREAD_PCT`: 유동성/스프레드 필터 기준.
+ - `SLACK_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: 알림 채널 설정.
 
 ## 실제 주문 사용 시 주의
 - 실거래를 활성화하려면 환경 변수에 업비트 API 키를 설정하고 `TradingBot(simulated=False)`로 생성하거나 `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`를 주입하세요.
