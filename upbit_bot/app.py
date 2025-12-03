@@ -15,7 +15,8 @@ from typing import Callable, Dict, Iterable, List, Optional
 import pandas as pd
 
 from upbit_bot.data.market_fetcher import fetch_markets
-from upbit_bot.data.stream import PriceBuffer, run_stream
+from upbit_bot.data.stream import PriceBuffer
+from upbit_bot.data.ohlcv_service import OhlcvService
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
 from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
@@ -90,26 +91,28 @@ class TradingBot:
         self.max_slippage_pct: float = float(os.environ.get("MAX_SLIPPAGE_PCT", 0.5))
         self.per_trade_risk_pct: float = float(os.environ.get("PER_TRADE_RISK_PCT", 1.0))
         self.daily_loss_limit_pct: float = float(os.environ.get("DAILY_LOSS_LIMIT_PCT", 5.0))
+        self.required_timeframes: List[str] = ["1m", "5m", "15m", "1h", "4h", "1d"]
+        self.ohlcv_service = OhlcvService(self.markets, price_buffer=self.price_buffer, timeframes=self.required_timeframes)
 
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
-        stream_task = asyncio.create_task(run_stream(self.markets, self.price_buffer, stop_event=self.stop_event))
+        ohlcv_task = asyncio.create_task(self.ohlcv_service.run(stop_event=self.stop_event))
         try:
             while not self.stop_event.is_set():
                 await self._tick()
                 await asyncio.sleep(1)
         finally:
             self.stop_event.set()
-            await stream_task
+            await ohlcv_task
 
     async def _tick(self) -> None:
         self._refresh_account_snapshot()
         for market in self.markets:
-            prices = self.price_buffer.get_prices(market)
-            if len(prices) < 50:
+            series_map = self.ohlcv_service.get_multi_series(market, self.required_timeframes)
+            primary = series_map.get("5m") or series_map.get("1m") or pd.Series(dtype=float)
+            if primary.empty or len(primary) < 50:
                 continue
-            series = pd.Series(prices)
-            base_decision = evaluate(market, series)
+            base_decision = evaluate(market, primary)
             decision = base_decision
             ai_raw = ""
 
@@ -121,7 +124,7 @@ class TradingBot:
             if self.use_ai:
                 ai_decision: AIDecision = evaluate_with_openai(
                     market,
-                    series,
+                    primary,
                     api_key=self._openai_key,
                     model=self.openai_model,
                     base_decision=base_decision,
