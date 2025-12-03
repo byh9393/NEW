@@ -21,17 +21,72 @@ Python 기반으로 업비트 거래소 모든 원화마켓을 실시간 추적�
 pip install -r requirements.txt
 ```
 
-## 실행 (데모)
-10초 동안 실시간 가격을 구독하며 신호를 출력하는 예시입니다.
-```bash
-python -m upbit_bot.app
-```
+## 시작 가이드 (단계별)
+1. **필수 준비물 확인**
+   - Python 3.10 이상과 `pip`이 설치되어 있어야 합니다.
+   - 실거래를 사용할 계획이면 업비트 OPEN API 발급을 완료하고, OpenAI 판단을 켜려면 `OPENAI_API_KEY`를 준비합니다.
 
-## GUI 대시보드 실행 (PySide6)
-PySide6 기반 카드형 그리드 대시보드를 통해 Tkinter GUI에서 제공하던 거래 시작/종료, 모의주문·OpenAI 판단 토글, 신호·가격·계좌·로그 확인 기능을 모두 사용할 수 있습니다. 컬럼 정렬·필터·검색, 다크/라이트 테마 전환, 주문/에러 알림 배너, 즐겨찾기 핀, 계좌/차트/로그를 한 화면에서 확인하세요.
-```bash
-python -m upbit_bot.ui.desktop
-```
+2. **가상환경 생성(권장)**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+   ```
+
+3. **의존성 설치**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **환경 변수(.env) 작성**
+   - 저장소 루트에 `.env`를 만들고 아래 예시를 채웁니다. 키가 없으면 모의주문으로만 실행됩니다.
+     ```env
+     OPENAI_API_KEY=your-openai-api-key
+     UPBIT_ACCESS_KEY=your-upbit-access-key
+     UPBIT_SECRET_KEY=your-upbit-secret-key
+     MIN_30D_AVG_TURNOVER=1000000000
+     MAX_SPREAD_PCT=2.0
+     SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
+     TELEGRAM_BOT_TOKEN=token
+     TELEGRAM_CHAT_ID=12345678
+     ```
+   - `.env`를 작성하지 않더라도 실행은 가능하지만, 실거래·알림·LLM 판단 기능은 비활성화됩니다.
+
+5. **데이터베이스 설정**
+   - 기본 저장소는 프로젝트 루트 하위 `./.state/trading.db` SQLite 파일이며, 봇을 최초 실행하면 자동 생성·스키마 마이그레이션(`ensure_schema`)이 수행됩니다.
+   - 저장 경로를 바꾸려면 `TradingBot(state_store=SQLiteStateStore(db_path="./data/trading.db"))`처럼 직접 경로를 넘겨 실행하세요.
+   - Docker·서버 환경에서는 DB 디렉터리를 볼륨으로 마운트해 컨테이너 재시작 시 상태(포지션, 주문·체결, 전략/리스크 이벤트)가 유지되도록 합니다.
+
+6. **데모 실행(모의주문 기본값)**
+   - 10초 동안 실시간 가격을 구독하며 신호를 출력합니다.
+   ```bash
+   python -m upbit_bot.app
+   ```
+   - 기본값은 `simulated=True`로 모의 체결만 발생하며, 계좌·주문 내역은 SQLite에 기록됩니다.
+
+7. **실거래로 전환(선택)**
+   - `.env`에 업비트 키를 설정한 뒤, 실행 시 `TRADING_MODE=live` 환경 변수를 추가하거나 `TradingBot(simulated=False)`로 생성하도록 설정합니다.
+   - 업비트 최소 주문금액 5,000원과 봇 내부 최소 30,000원 중 더 큰 값이 적용되므로, 잔고를 충분히 확보한 뒤 실거래를 시작하세요.
+
+8. **GUI 대시보드 열기(Pyside6)**
+   - 거래 시작/종료, 모의주문·OpenAI 판단 토글, 실시간 신호·가격·계좌·로그 확인 기능을 제공합니다.
+   ```bash
+   python -m upbit_bot.ui.desktop
+   ```
+   - 컬럼 정렬·필터·검색, 다크/라이트 테마 전환, 주문/에러 알림 배너, 즐겨찾기 핀, 계좌/차트/로그 패널을 한 화면에서 사용할 수 있습니다.
+
+9. **백테스트 실행**
+   - OHLCV CSV를 준비한 뒤 예시 코드를 실행해 전략/리스크 로직을 검증합니다(아래 예시 참조).
+   - 결과로 MDD/Sharpe/Profit Factor 등 통계가 출력되며, 실거래와 동일한 수수료·슬리피지·최소 주문금액 로직이 적용됩니다.
+
+10. **로그·데이터 확인 및 종료**
+   - 로그와 SQLite DB는 기본적으로 프로젝트 루트의 `upbit_bot` 하위 또는 실행 디렉터리에 생성됩니다.
+   - 모니터링을 끝냈다면 터미널에서 `Ctrl+C`로 종료하고, 실거래 모드였다면 대시보드에서 전략 OFF 또는 “긴급 ALL STOP” 버튼으로 진입을 막은 뒤 종료합니다.
+
+## 데이터베이스 설정 상세
+- **기본 경로**: `SQLiteStateStore`가 `./.state/trading.db`를 사용하며, 실행 시 자동 생성합니다.
+- **스키마**: 계좌 스냅샷, 포지션, 주문/체결, 캔들, 전략 상태, 리스크 이벤트, 설정 변경 내역 테이블을 포함합니다.
+- **경로 변경**: 직접 인스턴스화할 때 `SQLiteStateStore(db_path="/var/lib/upbit_bot/trading.db")`로 지정하고, 백업·복구 시 해당 파일만 보존하면 됩니다.
+- **백업 팁**: 서비스 중단 전에 파일을 복사하거나, 백업 전 `trading_bot.stop_event`를 설정해 트레이딩 루프를 멈춘 뒤 DB를 백업하면 일관성이 높습니다.
 
 ## 백테스트 실행 예시
 `BacktestEngine`으로 다중 종목 OHLCV를 검증할 수 있습니다.
