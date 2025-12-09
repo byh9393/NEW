@@ -243,14 +243,19 @@ class TradingBot:
                 decision = ai_decision.decision
                 ai_raw = ai_decision.raw_response
 
-            rejection_reason = self._validate_entry_filters(
-                market,
-                decision,
-                multi_factor,
-                primary,
-                volume_ranks.get(market),
-                correlation_map,
-            )
+        rejection_reason = self._validate_entry_filters(
+            market,
+            decision,
+            multi_factor,
+            primary,
+            volume_ranks.get(market),
+            correlation_map,
+        )
+        # Regime filter: require higher timeframe uptrend for longs, downtrend for shorts
+        if not rejection_reason and decision.signal == Signal.BUY and multi_factor.regime < 0.55:
+            rejection_reason = "상위 타임프레임 상승 미약"
+        if not rejection_reason and decision.signal == Signal.SELL and multi_factor.regime > 0.45:
+            rejection_reason = "상위 타임프레임 하락 미약"
 
             executed = False
             order_result: Optional[OrderResult] = None

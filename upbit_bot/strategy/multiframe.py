@@ -31,6 +31,7 @@ class MultiTimeframeFactor:
     composite: float
     reasons: List[str]
     trend_by_tf: Dict[str, float]
+    regime: float
 
 
 class MultiTimeframeAnalyzer:
@@ -96,6 +97,7 @@ class MultiTimeframeAnalyzer:
         volume = float(np.clip(np.mean(volume_scores or [0.5]), 0.0, 1.0))
         corr_factor = 1.0 - abs(correlation) if correlation is not None else 0.5
         corr_factor = float(np.clip(corr_factor, 0.0, 1.0))
+        regime = float(np.clip((trend_scores.get("1d", 0.5) + trend_scores.get("4h", 0.5)) / 2, 0.0, 1.0))
 
         composite = (
             trend * self.factor_weights["trend"]
@@ -114,4 +116,5 @@ class MultiTimeframeAnalyzer:
             composite=float(np.clip(composite, 0.0, 1.0)),
             reasons=reasons,
             trend_by_tf=trend_scores,
+            regime=regime,
         )
