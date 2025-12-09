@@ -15,6 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set
 
+import numpy as np
+import pandas as pd
+
 from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
@@ -462,6 +465,7 @@ class DesktopDashboard(QMainWindow):
         self.holding_table.setModel(self.holding_view_proxy)
         self.holding_table.setSortingEnabled(True)
         self.holding_table.horizontalHeader().setStretchLastSection(True)
+        self.holding_table.setAlternatingRowColors(True)
         holdings_layout.addWidget(self.holding_table)
 
         orders_box = self._create_card_frame("진행 중인 주문")
@@ -469,6 +473,7 @@ class DesktopDashboard(QMainWindow):
         self.order_table = QTableView()
         self.order_table.setModel(self.active_orders_model)
         self.order_table.horizontalHeader().setStretchLastSection(True)
+        self.order_table.setAlternatingRowColors(True)
         orders_layout.addWidget(self.order_table)
 
         trades_box = self._create_card_frame("체결 히스토리")
@@ -476,6 +481,7 @@ class DesktopDashboard(QMainWindow):
         self.trade_table = QTableView()
         self.trade_table.setModel(self.trade_history_model)
         self.trade_table.horizontalHeader().setStretchLastSection(True)
+        self.trade_table.setAlternatingRowColors(True)
         trades_layout.addWidget(self.trade_table)
 
         right_container = QWidget()
@@ -729,17 +735,20 @@ class DesktopDashboard(QMainWindow):
         self.ax.clear()
         self.ax.set_title(market or "Select Market")
         if market and market in self.price_history:
-            prices = list(self.price_history[market])
-            self.ax.plot(prices, color="tab:blue", label="Price")
-            if len(prices) > 5:
-                window = 5
-                ma = [sum(prices[i - window:i]) / window for i in range(window, len(prices) + 1)]
-                self.ax.plot(range(window - 1, len(prices)), ma, color="orange", label="Short MA")
-                self.ax.scatter(len(prices) - 1, prices[-1], color="green", marker="^", label="Entry/Exit")
-        self.ax.set_xlabel("Tick")
+            prices = np.array(self.price_history[market], dtype=float)
+            if prices.size > 1:
+                self.ax.plot(prices, color="#60a5fa", label="Price", linewidth=1.2)
+                if len(prices) >= 9:
+                    ema9 = pd.Series(prices).ewm(span=9).mean()
+                    ema21 = pd.Series(prices).ewm(span=21).mean()
+                    self.ax.plot(ema9, color="#22d3ee", label="EMA9", linewidth=1.0, alpha=0.9)
+                    self.ax.plot(ema21, color="#a855f7", label="EMA21", linewidth=1.0, alpha=0.9)
+                self.ax.fill_between(range(len(prices)), prices, color="#2563eb", alpha=0.08)
+                self.ax.scatter(len(prices) - 1, prices[-1], color="#10b981", marker="o", zorder=5)
+        self.ax.set_xlabel("Ticks")
         self.ax.set_ylabel("Price")
         self.ax.legend(loc="upper left")
-        self.ax.grid(True, alpha=0.3)
+        self.ax.grid(True, alpha=0.15)
         self.canvas.draw_idle()
 
     def _refresh_heatmap(self) -> None:
