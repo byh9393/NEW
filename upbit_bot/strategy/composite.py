@@ -20,6 +20,7 @@ from upbit_bot.indicators.technical import (
     bollinger_bands,
     ema,
     keltner_channel,
+    macd,
     percent_b,
     rate_of_change,
     rsi,
@@ -74,13 +75,16 @@ def _momentum_component(prices: pd.Series) -> Tuple[float, str]:
     roc_fast = rate_of_change(prices, period=6).iloc[-1]
     roc_mid = rate_of_change(prices, period=24).iloc[-1]
     accel = np.clip((roc_fast - roc_mid) * 0.6, -20, 20)
+    macd_df = macd(prices)
+    macd_hist = macd_df["hist"].iloc[-1]
+    macd_sig = np.tanh(macd_hist / (prices.std() + 1e-9)) * 35
 
     rsi_score = np.clip((rsi_val - 50) * 1.4 + rsi_slope * 3, -40, 40)
     stoch_score = np.clip((stoch_k - stoch_d) / 100 * 28 + (stoch_k - 50) * 0.45, -30, 30)
     roc_score = np.clip(roc_fast * 0.6 + roc_mid * 0.25 + accel, -35, 35)
-    score = float(np.clip(rsi_score + stoch_score + roc_score, -100, 100))
+    score = float(np.clip(rsi_score + stoch_score + roc_score + macd_sig, -100, 100))
     heat = "강세" if score > 0 else "약세"
-    return score, f"모멘텀 {heat} (RSI {rsi_val:.1f}/기울기 {rsi_slope:.2f}, ROC {roc_fast:.1f}/{roc_mid:.1f})"
+    return score, f"모멘텀 {heat} (RSI {rsi_val:.1f}/기울기 {rsi_slope:.2f}, ROC {roc_fast:.1f}/{roc_mid:.1f}, MACD {macd_hist:.4f})"
 
 
 def _volatility_component(prices: pd.Series) -> Tuple[float, str]:
@@ -167,11 +171,11 @@ def _aggregate_factors(prices: pd.Series) -> Tuple[float, List[str], Dict[str, f
     }
 
     weighted_score = (
-        components["trend"][0] * 0.32
-        + components["momentum"][0] * 0.32
-        + components["volatility"][0] * 0.16
-        + components["mean_reversion"][0] * 0.1
-        + components["quality"][0] * 0.1
+        components["trend"][0] * 0.36
+        + components["momentum"][0] * 0.36
+        + components["volatility"][0] * 0.12
+        + components["mean_reversion"][0] * 0.08
+        + components["quality"][0] * 0.08
     )
     score = float(np.clip(weighted_score, -100, 100))
     reasons = [comp[1] for comp in components.values()]
@@ -179,7 +183,7 @@ def _aggregate_factors(prices: pd.Series) -> Tuple[float, List[str], Dict[str, f
     return score, reasons, raw_scores
 
 
-def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 25, sell_threshold: float = -25) -> Decision:
+def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 35, sell_threshold: float = -15) -> Decision:
     """
     시장의 최근 가격 히스토리를 바탕으로 매수/매도 신호 평가.
 
