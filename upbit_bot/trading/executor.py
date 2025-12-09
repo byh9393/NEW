@@ -64,6 +64,16 @@ def _request_with_retry(
     for attempt in range(retries + 1):
         try:
             response = request_fn(url, headers=headers, json=json_body, params=params, timeout=10)
+            if response is None:
+                raise RuntimeError("empty response")
+            if response.status_code == 429 and attempt < retries:
+                delay = _compute_throttle_delay(response.headers) or backoff * (attempt + 1)
+                logger.warning("429 응답. %.2fs 대기 후 재시도 (%d/%d)", delay, attempt + 1, retries)
+                time.sleep(delay)
+                continue
+            delay = _compute_throttle_delay(response.headers)
+            if delay > 0:
+                time.sleep(delay)
             return response
         except Exception as exc:
             last_exc = exc

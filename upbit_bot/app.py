@@ -307,6 +307,9 @@ class TradingBot:
             if self._access and self._secret
             else None
         )
+        fee_rate = (constraints.bid_fee if (constraints and side == "bid") else constraints.ask_fee) if constraints else self.fee_rate
+        if fee_rate <= 0:
+            fee_rate = self.fee_rate
         plan = self._calculate_volume(decision, constraints)
         if plan.volume <= 0 or plan.rejection_reason:
             return OrderResult(
@@ -318,7 +321,7 @@ class TradingBot:
                 raw={},
                 fee=0.0,
                 net_amount=0.0,
-                fee_rate=self.fee_rate,
+                fee_rate=fee_rate,
                 error=plan.rejection_reason or "주문 조건 불충족",
                 validation_logs=plan.logs,
                 rejection_reason=plan.rejection_reason or "주문 조건 불충족",
@@ -342,7 +345,7 @@ class TradingBot:
                 raw={},
                 fee=0.0,
                 net_amount=0.0,
-                fee_rate=self.fee_rate,
+                fee_rate=fee_rate,
                 error=validation.rejection_reason or "주문 조건 불충족",
                 validation_logs=logs,
                 rejection_reason=validation.rejection_reason or "주문 조건 불충족",
@@ -356,12 +359,12 @@ class TradingBot:
             volume=plan.volume,
             price=plan.price,
             simulated=self.simulated or not self._access or not self._secret,
-            fee_rate=self.fee_rate,
+            fee_rate=fee_rate,
             validation_logs=logs,
         )
 
         if result.success and (self.simulated or not self._access or not self._secret):
-            self._apply_simulated_fill(decision, result.volume, price=plan.price, fee_rate=self.fee_rate)
+            self._apply_simulated_fill(decision, result.volume, price=plan.price, fee_rate=fee_rate)
 
         if result.success and not (self.simulated or not self._access or not self._secret):
             # 실거래 시 주문 응답에 포함된 예상 수수료를 누적 관리
@@ -529,7 +532,11 @@ class TradingBot:
         snapshot = self.account_snapshot or AccountSnapshot(
             krw_balance=self.krw_balance, holdings=[], total_value=self.krw_balance
         )
-        fee_rate = self.fee_rate
+        fee_rate = (
+            constraints.bid_fee if (constraints and decision.signal == Signal.BUY) else constraints.ask_fee
+        ) if constraints else self.fee_rate
+        if fee_rate <= 0:
+            fee_rate = self.fee_rate
         tick_size = constraints.tick_size if constraints else _infer_tick_size(decision.price)
         price = _normalize_price(decision.price, tick_size)
         slippage_limit = self.max_slippage_pct / 100.0
