@@ -788,8 +788,9 @@ class DesktopDashboard(QMainWindow):
                 for t in trades:
                     if t.get("market") == market:
                         idx = len(closes) - 1
+                        marker_y = t.get("price", closes.iloc[-1])
                         color = "#10b981" if t.get("side") == "ask" else "#f59e0b"
-                        self.ax.scatter(idx, t.get("price", closes.iloc[-1]), color=color, marker="^" if t.get("side")=="ask" else "v", zorder=5)
+                        self.ax.scatter(idx, marker_y, color=color, marker="^" if t.get("side") == "ask" else "v", zorder=6)
         self.ax.set_xlabel("Ticks")
         self.ax.set_ylabel("Price")
         self.ax.legend(loc="upper left")
@@ -861,22 +862,23 @@ class DesktopDashboard(QMainWindow):
                         lbl.setText(f"{val:.2f}" if isinstance(val, float) else str(val))
                 self._refresh_heatmap_list(heatmap)
             # populate timeline with orders and risk events
-            orders = self.state_store_reader.load_recent_orders(limit=20)
-            risks = self.state_store_reader.load_risk_events(limit=10)
-            for o in orders:
-                key = f"order-{o.get('created_at')}-{o.get('uuid')}"
-                if key in self.timeline_seen:
-                    continue
-                self.timeline_seen.add(key)
-                text = f"ORDER {o.get('market')} {o.get('side')} {o.get('price')} x {o.get('volume')} [{o.get('status')}]"
-                self._add_timeline_event(text, severity="info" if o.get("status") == "done" else "warn")
-            for r in risks:
-                key = f"risk-{r.get('created_at')}-{r.get('market')}"
-                if key in self.timeline_seen:
-                    continue
-                self.timeline_seen.add(key)
-                text = f"RISK {r.get('market')}: {r.get('reason')}"
-                self._add_timeline_event(text, severity="error")
+        orders = self.state_store_reader.load_recent_orders(limit=20)
+        risks = self.state_store_reader.load_risk_events(limit=10)
+        for o in orders:
+            key = f"order-{o.get('created_at')}-{o.get('uuid')}"
+            if key in self.timeline_seen:
+                continue
+            self.timeline_seen.add(key)
+            text = f"ORDER {o.get('market')} {o.get('side')} {o.get('price')} x {o.get('volume')} [{o.get('status')}]"
+            severity = "success" if o.get("status") == "done" else "warn"
+            self._add_timeline_event(text, severity=severity)
+        for r in risks:
+            key = f"risk-{r.get('created_at')}-{r.get('market')}"
+            if key in self.timeline_seen:
+                continue
+            self.timeline_seen.add(key)
+            text = f"RISK {r.get('market')}: {r.get('reason')}"
+            self._add_timeline_event(text, severity="error")
         except Exception:
             return
 
