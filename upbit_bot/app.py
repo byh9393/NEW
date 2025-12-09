@@ -39,7 +39,7 @@ from upbit_bot.trading.executor import (
 from upbit_bot.trading.exit_rules import evaluate_exit, compute_stop_targets
 from upbit_bot.trading.risk_portfolio import RiskLimits, RiskPortfolioManager
 from upbit_bot.storage import SQLiteStateStore
-from upbit_bot.monitoring.alerts import AlertSink, AlertMessage, Severity
+from upbit_bot.monitoring.alerts import AlertSink
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)

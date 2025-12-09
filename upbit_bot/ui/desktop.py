@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QFormLayout,
     QGridLayout,
@@ -288,6 +290,7 @@ class DesktopDashboard(QMainWindow):
         self.proxy_model = SignalFilterProxy()
         self.proxy_model.setSourceModel(self.signal_model)
         self.price_history: Dict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=200))
+        self.candle_history: Dict[str, List[float]] = defaultdict(list)
         self.latest_account = None
         self.active_markets: List[str] = []
         self.equity_history: Deque[float] = deque(maxlen=400)
@@ -532,6 +535,9 @@ class DesktopDashboard(QMainWindow):
         self.chart_selector = QComboBox()
         self.chart_selector.currentTextChanged.connect(self._refresh_chart)
         top.addWidget(self.chart_selector)
+        self.refresh_candles_btn = QPushButton("캔들 새로고침")
+        self.refresh_candles_btn.clicked.connect(self._refresh_chart)
+        top.addWidget(self.refresh_candles_btn)
         top.addStretch(1)
         chart_layout.addLayout(top)
 

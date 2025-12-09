@@ -53,6 +53,7 @@ class BacktestResult:
     trades: List[Trade] = field(default_factory=list)
     equity_curve: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     stats: Dict[str, float] = field(default_factory=dict)
+    by_market: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
 
 class BacktestEngine:
@@ -156,7 +157,8 @@ class BacktestEngine:
 
         equity_series = pd.Series({ts: eq for ts, eq in equity_history}).sort_index()
         stats = self._calc_stats(trades, equity_series)
-        return BacktestResult(trades=trades, equity_curve=equity_series, stats=stats)
+        by_market = self._calc_by_market(trades)
+        return BacktestResult(trades=trades, equity_curve=equity_series, stats=stats, by_market=by_market)
 
     def _merge_time_index(self, frames: Iterable[pd.DataFrame]) -> List[datetime]:
         merged = set()
@@ -265,5 +267,19 @@ class BacktestEngine:
             }
         )
         return stats
+
+    def _calc_by_market(self, trades: List[Trade]) -> Dict[str, Dict[str, float]]:
+        by_m: Dict[str, Dict[str, float]] = {}
+        for t in trades:
+            stats = by_m.setdefault(t.market, {"trades": 0, "pnl": 0.0, "win": 0, "loss": 0})
+            stats["trades"] += 1
+            stats["pnl"] += t.pnl
+            if t.pnl > 0:
+                stats["win"] += 1
+            else:
+                stats["loss"] += 1
+        for m, s in by_m.items():
+            s["win_rate_pct"] = s["win"] / s["trades"] * 100 if s["trades"] else 0
+        return by_m
 
     
