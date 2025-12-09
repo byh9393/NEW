@@ -183,6 +183,7 @@ class TradingBot:
         self._refresh_universe()
         correlation_map = self._compute_correlations()
         volume_ranks = self._compute_universe_ranks()
+        heatmap_entries = []
         for market in self.active_markets:
             frames_map = self.ohlcv_service.get_multi_frames(market, self.required_timeframes)
             primary_frame = frames_map.get("5m")
@@ -194,6 +195,16 @@ class TradingBot:
                 market,
                 frames_map,
                 correlation=self._correlation_to_portfolio(market, correlation_map),
+            )
+            heatmap_entries.append(
+                {
+                    "market": market,
+                    "composite": multi_factor.composite,
+                    "trend": multi_factor.trend,
+                    "momentum": multi_factor.momentum,
+                    "volume": multi_factor.volume,
+                    "price": float(primary.iloc[-1]),
+                }
             )
 
             base_decision = evaluate(market, primary)
