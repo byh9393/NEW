@@ -3,13 +3,14 @@
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Callable, Dict, List, Mapping, Optional
 
 import requests
 
@@ -57,14 +58,115 @@ def _jwt_token(access_key: str, secret_key: str, query: dict) -> str:
         m.update(q.encode())
         payload["query_hash"] = m.hexdigest()
         payload["query_hash_alg"] = "SHA512"
+
     header = {"typ": "JWT", "alg": "HS256"}
-    segments = [
-        json.dumps(header, separators=(",", ":")).encode(),
-        json.dumps(payload, separators=(",", ":")).encode(),
-    ]
-    signing_input = b".".join(segments)
+
+    def _b64(obj: dict) -> str:
+        encoded = json.dumps(obj, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(encoded).decode().rstrip("=")
+
+    header_b64 = _b64(header)
+    payload_b64 = _b64(payload)
+    signing_input = f"{header_b64}.{payload_b64}".encode()
     signature = hmac.new(secret_key.encode(), signing_input, hashlib.sha256).digest()
-    return b".".join([signing_input, signature]).decode("latin-1")
+    signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{header_b64}.{payload_b64}.{signature_b64}"
+
+
+def _parse_remaining_req(header_value: str) -> Dict[str, int]:
+    tokens = [t.strip() for t in header_value.split(";") if "=" in t]
+    result: Dict[str, int] = {}
+    for token in tokens:
+        key, value = token.split("=", 1)
+        try:
+            result[key] = int(value)
+        except ValueError:
+            continue
+    return result
+
+
+def _compute_throttle_delay(headers: Mapping[str, str]) -> float:
+    remaining_header = headers.get("Remaining-Req") if headers else None
+    if not remaining_header:
+        return 0.0
+
+    parsed = _parse_remaining_req(remaining_header)
+    sec_remaining = parsed.get("sec")
+    min_remaining = parsed.get("min")
+    delay = 0.0
+
+    if sec_remaining is not None and sec_remaining <= 1:
+        delay = max(delay, 1.0)
+    if min_remaining is not None and min_remaining <= 1:
+        delay = max(delay, 1.0)
+
+    return delay
+
+
+def _respect_rate_limit(headers: Mapping[str, str]) -> None:
+    delay = _compute_throttle_delay(headers)
+    if delay > 0:
+        logger.debug("Remaining-Req 헤더 기준으로 %.2fs 대기", delay)
+        time.sleep(delay)
+
+
+def _request_with_retry(
+    method: str,
+    url: str,
+    *,
+    request_fn: Optional[Callable[..., requests.Response]] = None,
+    headers: Optional[Mapping[str, str]] = None,
+    params: Optional[dict] = None,
+    json_body: Optional[dict] = None,
+    timeout: float = 10.0,
+    max_retries: int = 3,
+) -> Optional[requests.Response]:
+    backoff = 1.0
+    for attempt in range(1, max_retries + 1):
+        try:
+            if request_fn:
+                response = request_fn(
+                    url,
+                    headers=headers,
+                    params=params,
+                    json=json_body,
+                    timeout=timeout,
+                )
+            else:
+                response = requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    json=json_body,
+                    timeout=timeout,
+                )
+        except Exception:
+            logger.exception("%s 요청 중 네트워크 오류 (attempt=%d)", method, attempt)
+            if attempt == max_retries:
+                return None
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 8.0)
+            continue
+
+        _respect_rate_limit(response.headers)
+        if response.status_code in (429, 500, 502, 503, 504):
+            logger.warning(
+                "요청 실패(code=%s), %.1fs 후 재시도 (attempt=%d/%d)",
+                response.status_code,
+                backoff,
+                attempt,
+                max_retries,
+            )
+            if attempt == max_retries:
+                return response
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 8.0)
+            continue
+
+        return response
+
+    return None
 
 
 def _infer_tick_size(price: float) -> float:
@@ -108,10 +210,15 @@ def fetch_order_chance(*, access_key: str, secret_key: str, market: str) -> Opti
     query = {"market": market}
     jwt = _jwt_token(access_key, secret_key, query)
     headers = {"Authorization": f"Bearer {jwt}"}
-    try:
-        resp = requests.get("https://api.upbit.com/v1/orders/chance", headers=headers, params=query, timeout=10)
-    except Exception:
-        logger.exception("주문 가능 정보 조회 실패")
+    resp = _request_with_retry(
+        "GET",
+        "https://api.upbit.com/v1/orders/chance",
+        request_fn=requests.get,
+        headers=headers,
+        params=query,
+    )
+    if resp is None:
+        logger.error("주문 가능 정보 조회에 반복 실패")
         return None
 
     if not resp.ok:
@@ -208,7 +315,23 @@ def place_order(
     jwt = _jwt_token(access_key, secret_key, body)
     headers = {"Authorization": f"Bearer {jwt}"}
 
-    response = requests.post(url, json=body, headers=headers, timeout=10)
+    response = _request_with_retry("POST", url, request_fn=requests.post, headers=headers, json_body=body)
+    if response is None:
+        return OrderResult(
+            False,
+            side,
+            market,
+            volume,
+            price or 0.0,
+            raw={},
+            fee=fee,
+            net_amount=net_amount,
+            fee_rate=fee_rate,
+            error="주문 API 반복 실패",
+            validation_logs=logs,
+            rejection_reason="주문 API 반복 실패",
+        )
+
     if not response.ok:
         logger.error("주문 실패: %s", response.text)
         return OrderResult(
@@ -240,10 +363,10 @@ def place_order(
                 market_body["price"] = str((price or 0.0) * remaining)
             else:
                 market_body["volume"] = str(remaining)
-            try:
-                retry_resp = requests.post(url, json=market_body, headers=headers, timeout=10)
-            except Exception:
-                logger.exception("시장가 재시도 실패")
+            retry_resp = _request_with_retry(
+                "POST", url, request_fn=requests.post, headers=headers, json_body=market_body, max_retries=2
+            )
+            if retry_resp is None:
                 return OrderResult(
                     False,
                     side,
@@ -254,7 +377,7 @@ def place_order(
                     fee=executed_volume * (price or 0.0) * fee_rate,
                     net_amount=executed_volume * (price or 0.0) * (1 - fee_rate),
                     fee_rate=fee_rate,
-                    error="시장가 재시도 중 오류",
+                    error="시장가 재시도 중 네트워크 오류",
                     validation_logs=logs,
                 )
             if retry_resp.ok:
