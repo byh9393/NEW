@@ -29,7 +29,11 @@ class SQLiteStateStore:
     def __init__(self, db_path: str | Path = "./.state/trading.db") -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+        self.conn = sqlite3.connect(
+            self.db_path,
+            detect_types=sqlite3.PARSE_DECLTYPES,
+            check_same_thread=False,
+        )
         self.conn.row_factory = sqlite3.Row
 
     def ensure_schema(self) -> None:
@@ -124,6 +128,29 @@ class SQLiteStateStore:
         self._upsert_positions(snapshot.holdings)
         self.conn.commit()
 
+    def load_latest_snapshot(self) -> Optional[AccountSnapshot]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT krw_balance, total_value, total_fee, profit, profit_pct
+            FROM accounts_snapshot
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        holdings = self.load_holdings()
+        return AccountSnapshot(
+            krw_balance=float(row["krw_balance"] or 0.0),
+            holdings=holdings,
+            total_value=float(row["total_value"] or 0.0),
+            total_fee=float(row["total_fee"] or 0.0),
+            profit=float(row["profit"] or 0.0),
+            profit_pct=float(row["profit_pct"] or 0.0),
+        )
+
     def record_order(self, *, order_result: OrderResult) -> None:
         cur = self.conn.cursor()
         raw = json.dumps(order_result.raw, ensure_ascii=False)
@@ -198,6 +225,51 @@ class SQLiteStateStore:
             )
             for row in rows
         ]
+
+    def load_holdings(self) -> List[Holding]:
+        positions = self.load_positions()
+        holdings: List[Holding] = []
+        for pos in positions:
+            estimated = pos.avg_price * pos.volume
+            currency = pos.market.split("-")[-1] if "-" in pos.market else pos.market
+            holdings.append(
+                Holding(
+                    market=pos.market,
+                    currency=currency,
+                    balance=pos.volume,
+                    avg_buy_price=pos.avg_price,
+                    estimated_krw=estimated,
+                )
+            )
+        return holdings
+
+    def load_recent_orders(self, *, limit: int = 50) -> List[dict]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT uuid, market, side, price, volume, status, created_at
+            FROM orders
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+
+    def load_risk_events(self, *, limit: int = 50) -> List[dict]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT market, reason, created_at
+            FROM risk_events
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
 
     def save_config(self, payload: dict) -> None:
         cur = self.conn.cursor()

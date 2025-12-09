@@ -6,3 +6,5 @@ openai
 python-dotenv
 matplotlib
 PySide6
+fastapi
+uvicorn
