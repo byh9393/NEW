@@ -15,8 +15,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set
 
-from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, Qt,
-                            QSortFilterProxyModel, QTimer, Signal)
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QObject,
+    Qt,
+    QSortFilterProxyModel,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -290,7 +297,8 @@ class DesktopDashboard(QMainWindow):
         self._poll_timer.start(2000)
 
         self._init_ui()
-        self._apply_light_theme()
+        self._apply_dark_theme()
+        self._apply_modern_styles()
 
     # UI 구성
     def _init_ui(self) -> None:
@@ -892,25 +900,87 @@ class DesktopDashboard(QMainWindow):
         if not app:
             return
         palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(53, 53, 53))
-        palette.setColor(QPalette.WindowText, Qt.white)
-        palette.setColor(QPalette.Base, QColor(35, 35, 35))
-        palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-        palette.setColor(QPalette.ToolTipBase, Qt.white)
-        palette.setColor(QPalette.ToolTipText, Qt.white)
-        palette.setColor(QPalette.Text, Qt.white)
-        palette.setColor(QPalette.Button, QColor(53, 53, 53))
-        palette.setColor(QPalette.ButtonText, Qt.white)
-        palette.setColor(QPalette.BrightText, Qt.red)
-        palette.setColor(QPalette.Highlight, QColor(142, 45, 197).lighter())
-        palette.setColor(QPalette.HighlightedText, Qt.black)
+        palette.setColor(QPalette.Window, QColor("#0b1224"))
+        palette.setColor(QPalette.WindowText, QColor("#e5e7eb"))
+        palette.setColor(QPalette.Base, QColor("#0f172a"))
+        palette.setColor(QPalette.AlternateBase, QColor("#111827"))
+        palette.setColor(QPalette.ToolTipBase, QColor("#1f2937"))
+        palette.setColor(QPalette.ToolTipText, QColor("#e5e7eb"))
+        palette.setColor(QPalette.Text, QColor("#e5e7eb"))
+        palette.setColor(QPalette.Button, QColor("#111827"))
+        palette.setColor(QPalette.ButtonText, QColor("#e5e7eb"))
+        palette.setColor(QPalette.BrightText, QColor("#22d3ee"))
+        palette.setColor(QPalette.Highlight, QColor("#6366f1"))
+        palette.setColor(QPalette.HighlightedText, QColor("#0b1224"))
         app.setPalette(palette)
+        self._apply_modern_styles()
 
     def _apply_light_theme(self) -> None:
         app = QApplication.instance()
         if not app:
             return
-        app.setPalette(QApplication.style().standardPalette())
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor("#f8fafc"))
+        palette.setColor(QPalette.WindowText, QColor("#0f172a"))
+        palette.setColor(QPalette.Base, QColor("#ffffff"))
+        palette.setColor(QPalette.AlternateBase, QColor("#e2e8f0"))
+        palette.setColor(QPalette.ToolTipBase, QColor("#e2e8f0"))
+        palette.setColor(QPalette.ToolTipText, QColor("#0f172a"))
+        palette.setColor(QPalette.Text, QColor("#0f172a"))
+        palette.setColor(QPalette.Button, QColor("#e2e8f0"))
+        palette.setColor(QPalette.ButtonText, QColor("#0f172a"))
+        palette.setColor(QPalette.BrightText, QColor("#0ea5e9"))
+        palette.setColor(QPalette.Highlight, QColor("#6366f1"))
+        palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+        app.setPalette(palette)
+        self._apply_modern_styles(light=True)
+
+    def _apply_modern_styles(self, light: bool = False) -> None:
+        accent = "#6366f1"
+        bg = "#0b1224" if not light else "#f8fafc"
+        card = "#111827" if not light else "#ffffff"
+        border = "#1f2937" if not light else "#e2e8f0"
+        text = "#e5e7eb" if not light else "#0f172a"
+        tab = "#111827" if not light else "#e2e8f0"
+        self.setStyleSheet(
+            f"""
+            QWidget {{ background-color: {bg}; color: {text}; }}
+            QGroupBox {{
+                background-color: {card};
+                border: 1px solid {border};
+                border-radius: 10px;
+                margin-top: 10px;
+                padding-top: 12px;
+            }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 6px; color: {accent}; }}
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {accent}, stop:1 #22d3ee);
+                color: white; border: none; padding: 8px 14px; border-radius: 8px;
+            }}
+            QPushButton:hover {{ opacity: 0.95; }}
+            QLineEdit, QComboBox {{
+                background: #0f172a; border: 1px solid {border}; padding: 6px 8px; border-radius: 8px;
+                selection-background-color: {accent}; selection-color: #fff;
+            }}
+            QTableView {{
+                background: #0f172a;
+                gridline-color: {border};
+                alternate-background-color: #0b1224;
+                selection-background-color: #1d4ed8;
+                selection-color: #e5e7eb;
+            }}
+            QHeaderView::section {{
+                background: #111827;
+                color: #cbd5e1;
+                padding: 6px;
+                border: 1px solid {border};
+            }}
+            QTabWidget::pane {{ border: 1px solid {border}; border-radius: 8px; padding: 6px; }}
+            QTabBar::tab {{ background: {tab}; color: #cbd5e1; padding: 8px 14px; border-radius: 6px; margin: 2px; }}
+            QTabBar::tab:selected {{ background: #1f2937; color: #e5e7eb; }}
+            QListWidget {{ background: #0f172a; border: 1px solid {border}; border-radius: 8px; }}
+            """
+        )
 
 
 class HoldingTableModel(QAbstractTableModel):
