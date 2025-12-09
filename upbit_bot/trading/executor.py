@@ -3,13 +3,15 @@
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
-import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional, List
+from urllib.parse import urlencode
 
 import requests
 
@@ -50,21 +52,26 @@ class ValidationResult:
 
 
 def _jwt_token(access_key: str, secret_key: str, query: dict) -> str:
-    payload = {"access_key": access_key, "nonce": str(int(time.time() * 1000))}
+    """Generate an Upbit-compatible JWT token (HS256, base64url, SHA512 query hash)."""
+
+    def _b64(obj: dict) -> bytes:
+        raw = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=")
+
+    payload = {"access_key": access_key, "nonce": str(uuid.uuid4())}
     if query:
-        q = json.dumps(query, separators=(",", ":"), ensure_ascii=False)
-        m = hashlib.sha512()
-        m.update(q.encode())
-        payload["query_hash"] = m.hexdigest()
+        query_str = urlencode(sorted(query.items()))
+        digest = hashlib.sha512(query_str.encode()).hexdigest()
+        payload["query_hash"] = digest
         payload["query_hash_alg"] = "SHA512"
+
     header = {"typ": "JWT", "alg": "HS256"}
-    segments = [
-        json.dumps(header, separators=(",", ":")).encode(),
-        json.dumps(payload, separators=(",", ":")).encode(),
-    ]
-    signing_input = b".".join(segments)
+    header_seg = _b64(header)
+    payload_seg = _b64(payload)
+    signing_input = b".".join([header_seg, payload_seg])
     signature = hmac.new(secret_key.encode(), signing_input, hashlib.sha256).digest()
-    return b".".join([signing_input, signature]).decode("latin-1")
+    sig_seg = base64.urlsafe_b64encode(signature).rstrip(b"=")
+    return b".".join([header_seg, payload_seg, sig_seg]).decode()
 
 
 def _infer_tick_size(price: float) -> float:
@@ -160,7 +167,8 @@ def validate_order(
             reason = f"주문 금액이 거래소 최대금액 {max_total:.0f}원을 초과합니다."
             return ValidationResult(False, logs, reason)
     elif not simulated and not constraints:
-        logs.append("거래소 제약 정보를 가져오지 못해 검증을 완화합니다.")
+        reason = "거래소 최소·최대 금액/호가 정보를 가져오지 못해 주문을 진행하지 않습니다."
+        return ValidationResult(False, logs, reason)
 
     return ValidationResult(True, logs, None)
 
@@ -201,9 +209,17 @@ def place_order(
         )
 
     url = "https://api.upbit.com/v1/orders"
-    body = {"market": market, "side": side, "volume": str(volume), "ord_type": "limit"}
-    if price:
+    is_limit = price is not None
+    ord_type = "limit" if is_limit else ("price" if side == "bid" else "market")
+    body = {"market": market, "side": side, "ord_type": ord_type}
+    if is_limit:
         body["price"] = str(price)
+        body["volume"] = str(volume)
+    else:
+        if side == "bid":
+            body["price"] = str(amount)
+        else:
+            body["volume"] = str(volume)
 
     jwt = _jwt_token(access_key, secret_key, body)
     headers = {"Authorization": f"Bearer {jwt}"}
@@ -235,11 +251,11 @@ def place_order(
         remaining = max(volume - executed_volume, 0.0)
         if remaining > 0:
             logs.append(f"부분 체결 발생({executed_volume:.8f}/{volume:.8f}), 시장가 재시도")
-            market_body = {"market": market, "side": side, "ord_type": "market"}
+            market_body = {"market": market, "side": side}
             if side == "bid":
-                market_body["price"] = str((price or 0.0) * remaining)
+                market_body.update({"ord_type": "price", "price": str((price or 0.0) * remaining)})
             else:
-                market_body["volume"] = str(remaining)
+                market_body.update({"ord_type": "market", "volume": str(remaining)})
             try:
                 retry_resp = requests.post(url, json=market_body, headers=headers, timeout=10)
             except Exception:
