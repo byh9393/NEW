@@ -97,6 +97,16 @@ def get_app(db_path: str | Path = "./.state/trading.db", bot: Any = None) -> Fas
             "risk_events": store.load_risk_events(limit=10),
         }
 
+    @app.get("/pnl")
+    def pnl(limit: int = 500, store: SQLiteStateStore = Depends(store_dep)) -> dict:
+        curve = store.load_equity_curve(limit=limit)
+        return {"equity_curve": curve}
+
+    @app.get("/heatmap")
+    def heatmap() -> dict:
+        # Placeholder: frontend can render empty until factors exposed
+        return {"heatmap": []}
+
     @app.post("/controls/global")
     def toggle_global(payload: Dict[str, bool], store: SQLiteStateStore = Depends(store_dep)) -> dict:
         enabled = bool(payload.get("enabled", True))

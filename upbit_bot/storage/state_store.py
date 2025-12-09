@@ -268,6 +268,28 @@ class SQLiteStateStore:
         rows = cur.fetchall()
         return [dict(row) for row in rows]
 
+    def load_equity_curve(self, *, limit: int = 500) -> List[dict]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT captured_at, total_value, profit, profit_pct
+            FROM accounts_snapshot
+            ORDER BY captured_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        return [
+            {
+                "captured_at": row["captured_at"],
+                "total_value": float(row["total_value"] or 0.0),
+                "profit": float(row["profit"] or 0.0),
+                "profit_pct": float(row["profit_pct"] or 0.0),
+            }
+            for row in rows
+        ][::-1]
+
     def load_risk_events(self, *, limit: int = 50) -> List[dict]:
         cur = self.conn.cursor()
         cur.execute(
@@ -281,6 +303,43 @@ class SQLiteStateStore:
         )
         rows = cur.fetchall()
         return [dict(row) for row in rows]
+
+    def record_myorder_event(self, payload: dict) -> None:
+        """Persist a minimal order/trade event coming from myOrder stream."""
+        if not payload:
+            return
+        market = payload.get("code")
+        side = payload.get("side")
+        state = payload.get("state") or payload.get("event")
+        price = float(payload.get("price", 0.0) or 0.0)
+        vol = float(payload.get("volume", 0.0) or 0.0)
+        uuid = payload.get("uuid") or payload.get("orderId")
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO orders (uuid, market, side, price, volume, status, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(uuid) DO UPDATE SET status=excluded.status, raw=excluded.raw, price=excluded.price, volume=excluded.volume
+            """,
+            (uuid, market, side, price, vol, state, json.dumps(payload, ensure_ascii=False)),
+        )
+        if state == "done" or payload.get("event") == "trade":
+            cur.execute(
+                """
+                INSERT INTO trades (order_uuid, market, side, price, volume, fee, net_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid,
+                    market,
+                    side,
+                    price,
+                    vol,
+                    float(payload.get("paid_fee", 0.0) or 0.0),
+                    float(payload.get("funds", 0.0) or 0.0),
+                ),
+            )
+        self.conn.commit()
 
     def save_config(self, payload: dict) -> None:
         cur = self.conn.cursor()

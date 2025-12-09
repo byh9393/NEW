@@ -75,9 +75,13 @@ class UpbitWebSocketSync:
 
                 # parse minimal order deltas
                 if isinstance(data, dict):
-                    event = data.get("event")
-                    if event in ("order", "trade"):
+                    event = data.get("event") or data.get("state")
+                    if event in ("order", "trade", "done", "watch"):
                         logger.info("myOrder event: %s %s %s", event, data.get("side"), data.get("code"))
+                        try:
+                            self.state_store.record_myorder_event(data)
+                        except Exception:
+                            logger.exception("record_myorder_event failed")
 
                 snapshot = fetch_account_snapshot(
                     access_key=self.access_key,

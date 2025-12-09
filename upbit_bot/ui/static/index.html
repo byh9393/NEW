@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Upbit Bot Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    const API = "http://localhost:8000";
+    async function fetchJSON(path, opts={}) {
+      const res = await fetch(API + path, opts);
+      return res.json();
+    }
+    async function loadSnapshot() {
+      const data = await fetchJSON("/account");
+      const snap = data.snapshot;
+      if (!snap) return;
+      document.getElementById("krw").innerText = snap.krw_balance.toLocaleString();
+      document.getElementById("value").innerText = snap.total_value.toLocaleString();
+      document.getElementById("profit").innerText = snap.profit_pct.toFixed(2) + "%";
+      const holdings = document.getElementById("holdings");
+      holdings.innerHTML = snap.holdings.map(h =>
+        `<tr><td class="px-2 py-1">${h.market}</td><td class="px-2 py-1">${h.balance}</td><td class="px-2 py-1">${h.avg_buy_price}</td><td class="px-2 py-1">${h.estimated_krw.toLocaleString()}</td></tr>`
+      ).join("");
+    }
+    async function loadEquity() {
+      const data = await fetchJSON("/pnl");
+      const curve = data.equity_curve || [];
+      const pnl = document.getElementById("pnl");
+      pnl.innerHTML = curve.slice(-20).map(p =>
+        `<div class="flex justify-between text-xs text-gray-300"><span>${p.captured_at}</span><span>${p.total_value.toFixed(0)}</span></div>`
+      ).join("");
+    }
+    async function loadOrders() {
+      const data = await fetchJSON("/orders");
+      const orders = document.getElementById("orders");
+      orders.innerHTML = data.orders.map(o =>
+        `<tr><td class="px-2 py-1">${o.market}</td><td class="px-2 py-1">${o.side}</td><td class="px-2 py-1">${o.price}</td><td class="px-2 py-1">${o.volume}</td><td class="px-2 py-1">${o.status}</td></tr>`
+      ).join("");
+    }
+    async function toggleGlobal(on) {
+      await fetchJSON("/controls/global",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});
+      document.getElementById("global-status").innerText = on ? "ON" : "OFF";
+    }
+    window.onload = async () => {
+      await loadSnapshot();
+      await loadEquity();
+      await loadOrders();
+      const ws = new WebSocket(API.replace("http","ws") + "/ws/stream");
+      ws.onmessage = (ev)=> {
+        const msg = JSON.parse(ev.data);
+        if(msg.type==="snapshot" && msg.data){
+          document.getElementById("krw").innerText = msg.data.krw_balance.toLocaleString();
+          document.getElementById("value").innerText = msg.data.total_value.toLocaleString();
+          document.getElementById("profit").innerText = msg.data.profit_pct.toFixed(2)+"%";
+        }
+      };
+    };
+  </script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen">
+  <div class="max-w-6xl mx-auto p-6 space-y-6">
+    <header class="flex items-center justify-between">
+      <h1 class="text-2xl font-bold">Upbit Bot Dashboard</h1>
+      <div class="space-x-2">
+        <button class="px-3 py-2 bg-emerald-600 rounded" onclick="toggleGlobal(true)">Enable</button>
+        <button class="px-3 py-2 bg-rose-600 rounded" onclick="toggleGlobal(false)">Disable</button>
+        <span id="global-status" class="ml-2 text-sm text-gray-300">ON</span>
+      </div>
+    </header>
+    <section class="grid grid-cols-3 gap-4">
+      <div class="bg-slate-800 p-4 rounded">
+        <div class="text-gray-400 text-sm">KRW Balance</div>
+        <div id="krw" class="text-2xl font-semibold">-</div>
+      </div>
+      <div class="bg-slate-800 p-4 rounded">
+        <div class="text-gray-400 text-sm">Total Value</div>
+        <div id="value" class="text-2xl font-semibold">-</div>
+      </div>
+      <div class="bg-slate-800 p-4 rounded">
+        <div class="text-gray-400 text-sm">Profit %</div>
+        <div id="profit" class="text-2xl font-semibold">-</div>
+      </div>
+    </section>
+    <section class="grid grid-cols-3 gap-4">
+      <div class="bg-slate-800 p-4 rounded col-span-2">
+        <div class="flex justify-between mb-2">
+          <h2 class="font-semibold">Holdings</h2>
+        </div>
+        <table class="w-full text-sm">
+          <thead><tr><th class="text-left px-2">Market</th><th class="text-left px-2">Qty</th><th class="text-left px-2">Avg</th><th class="text-left px-2">Est. KRW</th></tr></thead>
+          <tbody id="holdings"></tbody>
+        </table>
+      </div>
+      <div class="bg-slate-800 p-4 rounded">
+        <h2 class="font-semibold mb-2">Equity (latest)</h2>
+        <div id="pnl" class="space-y-1 text-xs"></div>
+      </div>
+    </section>
+    <section class="bg-slate-800 p-4 rounded">
+      <div class="flex justify-between mb-2">
+        <h2 class="font-semibold">Recent Orders</h2>
+      </div>
+      <table class="w-full text-sm">
+        <thead><tr><th class="text-left px-2">Market</th><th class="text-left px-2">Side</th><th class="text-left px-2">Price</th><th class="text-left px-2">Vol</th><th class="text-left px-2">Status</th></tr></thead>
+        <tbody id="orders"></tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>
