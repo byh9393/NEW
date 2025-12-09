@@ -321,6 +321,13 @@ class TradingBot:
                     self.on_update(update)
                 except Exception:
                     logger.exception("on_update 콜백 처리 중 오류")
+        if heatmap_entries:
+            try:
+                state = self.state_store.load_strategy_state() or {}
+                state["heatmap"] = heatmap_entries
+                self.state_store.persist_strategy_state(state)
+            except Exception:
+                logger.debug("heatmap persist skipped", exc_info=True)
 
     def execute(self, decision: Decision) -> OrderResult:
         side = "bid" if decision.signal == Signal.BUY else "ask"

@@ -12,6 +12,7 @@ import sys
 import threading
 from collections import defaultdict, deque
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, Qt,
@@ -46,6 +47,7 @@ from matplotlib.figure import Figure
 
 from upbit_bot.app import DecisionUpdate, TradingBot
 from upbit_bot.data.market_fetcher import fetch_markets
+from upbit_bot.storage import SQLiteStateStore
 
 PIN_ROLE = Qt.UserRole + 1
 TIMESTAMP_ROLE = Qt.UserRole + 2
@@ -278,9 +280,14 @@ class DesktopDashboard(QMainWindow):
         self.latest_account = None
         self.active_markets: List[str] = []
         self.equity_history: Deque[float] = deque(maxlen=400)
+        self.heatmap_cache: List[Dict[str, float]] = []
         self.active_orders_model = OrderTableModel()
         self.trade_history_model = TradeHistoryModel()
         self.error_log_model = ErrorLogTableModel()
+        self.state_store_reader: Optional[SQLiteStateStore] = None
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_state_store)
+        self._poll_timer.start(2000)
 
         self._init_ui()
         self._apply_light_theme()
@@ -728,11 +735,11 @@ class DesktopDashboard(QMainWindow):
         self.canvas.draw_idle()
 
     def _refresh_heatmap(self) -> None:
-        updates = list(self.signal_model._latest.values())
-        if not updates:
+        entries = self.heatmap_cache
+        if not entries:
             return
-        markets = sorted(updates, key=lambda u: u.score, reverse=True)[:16]
-        scores = [u.score for u in markets]
+        markets = sorted(entries, key=lambda e: e.get("composite", 0), reverse=True)[:16]
+        scores = [m.get("composite", 0) * 100 for m in markets]
         size = int(len(scores) ** 0.5) or 1
         while size * size < len(scores):
             size += 1
@@ -745,7 +752,8 @@ class DesktopDashboard(QMainWindow):
         self.heatmap_ax.set_title("Score Heatmap")
         for idx, score in enumerate(scores):
             y, x = divmod(idx, size)
-            self.heatmap_ax.text(x, y, f"{markets[idx].market}\n{score:.1f}", ha="center", va="center", color="black")
+            label = f"{markets[idx].get('market','')}\n{score:.1f}"
+            self.heatmap_ax.text(x, y, label, ha="center", va="center", color="black")
         self.heatmap_canvas.draw_idle()
 
     def _refresh_equity_curve(self) -> None:
@@ -756,6 +764,25 @@ class DesktopDashboard(QMainWindow):
         self.equity_ax.set_ylabel("Total Asset")
         self.equity_ax.grid(True, alpha=0.2)
         self.equity_canvas.draw_idle()
+
+    def _poll_state_store(self) -> None:
+        if not self.state_store_reader:
+            db_path = getattr(getattr(self.runner.bot, "state_store", None), "db_path", Path("./.state/trading.db"))
+            self.state_store_reader = SQLiteStateStore(db_path=db_path)
+            self.state_store_reader.ensure_schema()
+        try:
+            curve = self.state_store_reader.load_equity_curve(limit=200)
+            if curve:
+                self.equity_history.clear()
+                self.equity_history.extend([c["total_value"] for c in curve])
+                self._refresh_equity_curve()
+            state = self.state_store_reader.load_strategy_state() or {}
+            heatmap = state.get("heatmap")
+            if heatmap:
+                self.heatmap_cache = heatmap
+                self._refresh_heatmap()
+        except Exception:
+            return
 
     def _update_status_badges(self, snapshot) -> None:
         bot = self.runner.bot
