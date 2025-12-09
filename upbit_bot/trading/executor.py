@@ -115,10 +115,15 @@ def fetch_order_chance(*, access_key: str, secret_key: str, market: str) -> Opti
     query = {"market": market}
     jwt = _jwt_token(access_key, secret_key, query)
     headers = {"Authorization": f"Bearer {jwt}"}
-    try:
-        resp = requests.get("https://api.upbit.com/v1/orders/chance", headers=headers, params=query, timeout=10)
-    except Exception:
-        logger.exception("주문 가능 정보 조회 실패")
+    resp = _request_with_retry(
+        "GET",
+        "https://api.upbit.com/v1/orders/chance",
+        request_fn=requests.get,
+        headers=headers,
+        params=query,
+    )
+    if resp is None:
+        logger.error("주문 가능 정보 조회에 반복 실패")
         return None
 
     if not resp.ok:
@@ -224,7 +229,23 @@ def place_order(
     jwt = _jwt_token(access_key, secret_key, body)
     headers = {"Authorization": f"Bearer {jwt}"}
 
-    response = requests.post(url, json=body, headers=headers, timeout=10)
+    response = _request_with_retry("POST", url, request_fn=requests.post, headers=headers, json_body=body)
+    if response is None:
+        return OrderResult(
+            False,
+            side,
+            market,
+            volume,
+            price or 0.0,
+            raw={},
+            fee=fee,
+            net_amount=net_amount,
+            fee_rate=fee_rate,
+            error="주문 API 반복 실패",
+            validation_logs=logs,
+            rejection_reason="주문 API 반복 실패",
+        )
+
     if not response.ok:
         logger.error("주문 실패: %s", response.text)
         return OrderResult(
@@ -270,7 +291,7 @@ def place_order(
                     fee=executed_volume * (price or 0.0) * fee_rate,
                     net_amount=executed_volume * (price or 0.0) * (1 - fee_rate),
                     fee_rate=fee_rate,
-                    error="시장가 재시도 중 오류",
+                    error="시장가 재시도 중 네트워크 오류",
                     validation_logs=logs,
                 )
             if retry_resp.ok:
