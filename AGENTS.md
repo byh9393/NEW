@@ -65,7 +65,7 @@ o	텔레그램/슬랙 알림
 o	에러/리스크 이벤트/손실 한도 초과 알림
 9.	대시보드 앱
 o	Backend: FastAPI(or Flask) + WebSocket
-o	Frontend: React + Tailwind (차트: Recharts, ECharts 등)
+o	Frontend: Desktop App
 o	기능: 실시간 계좌/포지션/전략 상태/설정/On-Off 컨트롤
 ________________________________________
 3. Upbit 연동 및 인프라 기능
