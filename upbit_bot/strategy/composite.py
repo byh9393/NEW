@@ -183,7 +183,7 @@ def _aggregate_factors(prices: pd.Series) -> Tuple[float, List[str], Dict[str, f
     return score, reasons, raw_scores
 
 
-def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 35, sell_threshold: float = -15) -> Decision:
+def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 40, sell_threshold: float = -40) -> Decision:
     """
     시장의 최근 가격 히스토리를 바탕으로 매수/매도 신호 평가.
 

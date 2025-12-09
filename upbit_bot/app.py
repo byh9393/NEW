@@ -155,6 +155,7 @@ class TradingBot:
             "mean_reversion": True,
             "breakout": True,
         }
+        self._last_signal_ts: Dict[str, float] = {}
         self._recover_state()
 
         self.ws_sync = UpbitWebSocketSync(
@@ -287,21 +288,48 @@ class TradingBot:
                 )
 
             if should_execute:
+                now_ts = time()
+                key = f"{market}:{decision.signal}"
+                last_ts = self._last_signal_ts.get(key)
+                if last_ts and now_ts - last_ts < 30:
+                    should_execute = False
+                    decision = Decision(
+                        market=market,
+                        price=float(primary.iloc[-1]),
+                        score=decision.score,
+                        signal=Signal.HOLD,
+                        reason="Signal cooldown",
+                        quality=decision.quality,
+                        suppress_log=True,
+                    )
+                else:
+                    self._last_signal_ts[key] = now_ts
+
+            if should_execute:
                 order_result = self.execute(decision)
                 executed = True
                 if decision.signal == Signal.BUY:
                     self.risk_manager.register_entry(market)
                 else:
                     self.risk_manager.register_exit(market)
-                logger.info(
-                    "%s -> %s (점수 %.1f): %s | AI=%s",
-                    market,
-                    decision.signal,
-                    decision.score,
-                    order_result.raw,
-                    ai_raw,
-                )
-                self._refresh_account_snapshot(force=True)
+                if order_result.success:
+                    logger.info(
+                        "%s -> %s (점수 %.1f): %s | AI=%s",
+                        market,
+                        decision.signal,
+                        decision.score,
+                        order_result.raw,
+                        ai_raw,
+                    )
+                    self._refresh_account_snapshot(force=True)
+                else:
+                    logger.warning(
+                        "%s %s rejected: %s (reason=%s)",
+                        market,
+                        decision.signal,
+                        order_result.error,
+                        order_result.rejection_reason,
+                    )
 
             if self.on_update:
                 update = DecisionUpdate(
