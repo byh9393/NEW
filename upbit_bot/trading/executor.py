@@ -8,14 +8,71 @@ import hashlib
 import hmac
 import json
 import logging
-import uuid
+import time
 from dataclasses import dataclass, field
 from typing import Optional, List
-from urllib.parse import urlencode
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_remaining_req(header: str | None) -> dict:
+    """Parse Remaining-Req header into numeric min/sec fields."""
+    result: dict = {}
+    if not header:
+        return result
+    for item in header.split(";"):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key in ("min", "sec"):
+            try:
+                result[key] = int(value)
+            except ValueError:
+                continue
+    return result
+
+
+def _compute_throttle_delay(headers: dict, *, min_threshold: int = 1, sec_threshold: int = 1) -> float:
+    """Return wait seconds based on Remaining-Req header; throttle when near limits."""
+    parsed = _parse_remaining_req(headers.get("Remaining-Req"))
+    if not parsed:
+        return 0.0
+    min_rem = parsed.get("min", 999)
+    sec_rem = parsed.get("sec", 999)
+    if min_rem <= min_threshold or sec_rem <= sec_threshold:
+        return 1.0
+    return 0.0
+
+
+def _request_with_retry(
+    method: str,
+    url: str,
+    *,
+    request_fn,
+    headers: Optional[dict] = None,
+    json_body: Optional[dict] = None,
+    params: Optional[dict] = None,
+    retries: int = 2,
+    backoff: float = 0.5,
+):
+    """Lightweight retry wrapper for HTTP requests."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(retries + 1):
+        try:
+            response = request_fn(url, headers=headers, json=json_body, params=params, timeout=10)
+            return response
+        except Exception as exc:
+            last_exc = exc
+            sleep_for = backoff * (attempt + 1)
+            logger.warning("HTTP %s failed (%s). retry %d/%d in %.2fs", method, exc, attempt + 1, retries, sleep_for)
+            time.sleep(sleep_for)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("request failed")
 
 
 @dataclass
@@ -58,11 +115,12 @@ def _jwt_token(access_key: str, secret_key: str, query: dict) -> str:
         raw = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode()
         return base64.urlsafe_b64encode(raw).rstrip(b"=")
 
-    payload = {"access_key": access_key, "nonce": str(uuid.uuid4())}
+    payload = {"access_key": access_key, "nonce": str(int(time.time() * 1000))}
     if query:
-        query_str = urlencode(sorted(query.items()))
-        digest = hashlib.sha512(query_str.encode()).hexdigest()
-        payload["query_hash"] = digest
+        q = json.dumps(query, separators=(",", ":"), ensure_ascii=False)
+        m = hashlib.sha512()
+        m.update(q.encode())
+        payload["query_hash"] = m.hexdigest()
         payload["query_hash_alg"] = "SHA512"
 
     header = {"typ": "JWT", "alg": "HS256"}

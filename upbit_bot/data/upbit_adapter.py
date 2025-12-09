@@ -29,7 +29,12 @@ class RateLimit:
         if not header:
             return None
         try:
-            parts = dict(item.split("=") for item in header.split(";"))
+            parts = {}
+            for item in header.split(";"):
+                if "=" not in item:
+                    continue
+                k, v = item.split("=", 1)
+                parts[k.strip()] = v.strip()
             return cls(
                 group=parts.get("group", ""),
                 min_remaining=int(parts.get("min", "0")),
