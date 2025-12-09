@@ -22,6 +22,8 @@ from upbit_bot.data.universe import UniverseManager
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
 from upbit_bot.strategy.multiframe import MultiTimeframeAnalyzer, MultiTimeframeFactor
+from upbit_bot.strategy.breakout import breakout_signal
+from upbit_bot.strategy.mean_reversion import mean_reversion_signal
 from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
 from upbit_bot.trading.ws_sync import UpbitWebSocketSync
 from upbit_bot.trading.executor import (
@@ -209,7 +211,14 @@ class TradingBot:
             )
 
             base_decision = evaluate(market, primary)
-            decision = base_decision
+            decisions: List[Decision] = [base_decision]
+            if self.strategy_switches.get("breakout", True):
+                decisions.append(breakout_signal(market, primary, frames_map.get("5m", {}).get("volume")))
+            if self.strategy_switches.get("mean_reversion", True):
+                decisions.append(mean_reversion_signal(market, primary))
+
+            # Choose the strongest signal by absolute score
+            decision = max(decisions, key=lambda d: abs(d.score))
             ai_raw = ""
 
             snapshot = self.account_snapshot
@@ -601,6 +610,12 @@ class TradingBot:
             fee_rate = self.fee_rate
         tick_size = constraints.tick_size if constraints else _infer_tick_size(decision.price)
         price = _normalize_price(decision.price, tick_size)
+        atr_val = None
+        primary_frame = self.ohlcv_service.get_frame(decision.market, "5m")
+        if primary_frame is not None and not primary_frame.empty and "close" in primary_frame:
+            closes = primary_frame["close"]
+            if len(closes) >= 20:
+                atr_val = float(np.nan_to_num(closes.diff().abs().rolling(window=14).mean().iloc[-1]))
         slippage_limit = self.max_slippage_pct / 100.0
         last_price = self.price_buffer.latest(decision.market)
         if last_price and last_price > 0:
@@ -621,6 +636,11 @@ class TradingBot:
         min_volume = min_total / (price * (1 - fee_rate))
         equity = snapshot.total_value if snapshot else self.krw_balance
         risk_cap_amount = equity * (self.per_trade_risk_pct / 100.0)
+        atr_position = 0.0
+        if atr_val and atr_val > 0:
+            stop_distance = max(price * 0.012, atr_val * 1.6)
+            unit_risk = stop_distance
+            atr_position = (risk_cap_amount / unit_risk) if unit_risk > 0 else 0.0
 
         if decision.signal == Signal.BUY:
             available_krw = snapshot.krw_balance if snapshot else self.krw_balance
@@ -635,6 +655,8 @@ class TradingBot:
             strength = max(decision.score, 0.0) / 100.0
             weight = 0.05 + (0.25 - 0.05) * strength  # 5~25% 비중 배정
             target_amount = min(available_krw * weight, risk_cap_amount)
+            if atr_position > 0:
+                target_amount = min(target_amount, atr_position * price)
             target_volume = target_amount / price
             volume = max(min_volume, target_volume)
             volume = min(max_affordable_volume, volume)

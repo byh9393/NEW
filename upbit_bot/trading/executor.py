@@ -259,6 +259,7 @@ def place_order(
     fee_rate: float = 0.0005,
     validation_logs: Optional[List[str]] = None,
     allow_retry: bool = True,
+    atr: Optional[float] = None,
 ) -> OrderResult:
     """
     업비트 주문 API 호출 혹은 모의주문 수행.
