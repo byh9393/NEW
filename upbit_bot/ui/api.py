@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Dict
 
 from fastapi import Depends, FastAPI, WebSocket
 from fastapi.responses import JSONResponse
@@ -22,8 +22,8 @@ def _store(db_path: str | Path = "./.state/trading.db") -> SQLiteStateStore:
     return store
 
 
-def get_app(db_path: str | Path = "./.state/trading.db") -> FastAPI:
-    app = FastAPI(title="Upbit Bot Dashboard", version="0.1.0")
+def get_app(db_path: str | Path = "./.state/trading.db", bot: Any = None) -> FastAPI:
+    app = FastAPI(title="Upbit Bot Dashboard", version="0.2.0")
 
     def store_dep() -> SQLiteStateStore:
         return _store(db_path)
@@ -80,6 +80,70 @@ def get_app(db_path: str | Path = "./.state/trading.db") -> FastAPI:
     def risk_events(limit: int = 50, store: SQLiteStateStore = Depends(store_dep)) -> dict:
         rows = store.load_risk_events(limit=limit)
         return {"events": [dict(row) for row in rows]}
+
+    @app.get("/status")
+    def status(store: SQLiteStateStore = Depends(store_dep)) -> dict:
+        snap = store.load_latest_snapshot()
+        strategy_state = store.load_strategy_state()
+        return {
+            "snapshot": None
+            if not snap
+            else {
+                "krw_balance": snap.krw_balance,
+                "total_value": snap.total_value,
+                "profit_pct": snap.profit_pct,
+            },
+            "strategy_state": strategy_state,
+            "risk_events": store.load_risk_events(limit=10),
+        }
+
+    @app.post("/controls/global")
+    def toggle_global(payload: Dict[str, bool], store: SQLiteStateStore = Depends(store_dep)) -> dict:
+        enabled = bool(payload.get("enabled", True))
+        if bot:
+            try:
+                bot.set_global_enabled(enabled)
+            except Exception:
+                pass
+        state = store.load_strategy_state() or {}
+        state["global_enabled"] = enabled
+        store.persist_strategy_state(state)
+        return {"global_enabled": enabled}
+
+    @app.post("/controls/emergency")
+    def emergency(payload: Dict[str, bool], store: SQLiteStateStore = Depends(store_dep)) -> dict:
+        active = bool(payload.get("active", False))
+        close_positions = bool(payload.get("close_positions", False))
+        if bot:
+            try:
+                bot.set_emergency_stop(active=active, close_positions=close_positions)
+            except Exception:
+                pass
+        state = store.load_strategy_state() or {}
+        state["emergency_stop"] = {"active": active, "close_positions": close_positions}
+        store.persist_strategy_state(state)
+        return state["emergency_stop"]
+
+    @app.post("/controls/strategy")
+    def strategy_switch(payload: Dict[str, Any], store: SQLiteStateStore = Depends(store_dep)) -> dict:
+        name = str(payload.get("name", ""))
+        enabled = bool(payload.get("enabled", True))
+        if bot and name:
+            try:
+                bot.set_strategy_enabled(name, enabled)
+            except Exception:
+                pass
+        state = store.load_strategy_state() or {}
+        strategies = state.get("strategies", {})
+        strategies[name] = enabled
+        state["strategies"] = strategies
+        store.persist_strategy_state(state)
+        return {"name": name, "enabled": enabled}
+
+    @app.post("/config")
+    def save_config(payload: Dict[str, Any], store: SQLiteStateStore = Depends(store_dep)) -> dict:
+        store.save_config(payload)
+        return {"saved": True}
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket, store: SQLiteStateStore = Depends(store_dep)) -> None:

@@ -212,6 +212,17 @@ class SQLiteStateStore:
         )
         self.conn.commit()
 
+    def load_strategy_state(self) -> Optional[dict]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT payload FROM strategy_state WHERE id=1")
+        row = cur.fetchone()
+        if not row or not row["payload"]:
+            return None
+        try:
+            return json.loads(row["payload"])
+        except Exception:
+            return None
+
     def load_positions(self) -> List[PositionRecord]:
         cur = self.conn.cursor()
         cur.execute("SELECT market, volume, avg_price, opened_at FROM positions WHERE volume > 0")

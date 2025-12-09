@@ -51,6 +51,27 @@ def test_orders_and_risk_events_return_empty_list(store):
     assert client.get("/risk-events").json()["events"] == []
 
 
+def test_strategy_controls_update_state(store):
+    app = get_app(store.db_path)
+    client = TestClient(app)
+
+    resp = client.post("/controls/global", json={"enabled": False})
+    assert resp.status_code == 200
+    assert resp.json()["global_enabled"] is False
+
+    resp = client.post("/controls/emergency", json={"active": True, "close_positions": True})
+    assert resp.status_code == 200
+    assert resp.json()["active"] is True
+
+    resp = client.post("/controls/strategy", json={"name": "trend", "enabled": False})
+    assert resp.status_code == 200
+    assert resp.json()["enabled"] is False
+
+    status = client.get("/status").json()
+    assert status["strategy_state"]["global_enabled"] is False
+    assert status["strategy_state"]["strategies"]["trend"] is False
+
+
 def test_websocket_stream_sends_snapshot(store):
     app = get_app(store.db_path)
     client = TestClient(app)

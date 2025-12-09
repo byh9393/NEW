@@ -23,6 +23,7 @@ from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
 from upbit_bot.strategy.multiframe import MultiTimeframeAnalyzer, MultiTimeframeFactor
 from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
+from upbit_bot.trading.ws_sync import UpbitWebSocketSync
 from upbit_bot.trading.executor import (
     OrderChance,
     OrderResult,
@@ -156,16 +157,26 @@ class TradingBot:
         }
         self._recover_state()
 
+        self.ws_sync = UpbitWebSocketSync(
+            markets=self.markets,
+            price_buffer=self.price_buffer,
+            state_store=self.state_store,
+            access_key=self._access,
+            secret_key=self._secret,
+            on_account=lambda snap: setattr(self, "account_snapshot", snap),
+        )
+
     async def start(self) -> None:
         logger.info("거래봇 시작. 모니터링 시장 수: %d", len(self.markets))
         ohlcv_task = asyncio.create_task(self.ohlcv_service.run(stop_event=self.stop_event))
+        ws_task = asyncio.create_task(self.ws_sync.run(stop_event=self.stop_event))
         try:
             while not self.stop_event.is_set():
                 await self._tick()
                 await asyncio.sleep(1)
         finally:
             self.stop_event.set()
-            await ohlcv_task
+            await asyncio.gather(ohlcv_task, ws_task, return_exceptions=True)
 
     async def _tick(self) -> None:
         self._refresh_account_snapshot()
