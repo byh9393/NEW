@@ -11,6 +11,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional, List
+from urllib.parse import urlencode, quote
 
 import requests
 
@@ -127,10 +128,10 @@ def _jwt_token(access_key: str, secret_key: str, query: dict) -> str:
 
     payload = {"access_key": access_key, "nonce": str(int(time.time() * 1000))}
     if query:
-        q = json.dumps(query, separators=(",", ":"), ensure_ascii=False)
-        m = hashlib.sha512()
-        m.update(q.encode())
-        payload["query_hash"] = m.hexdigest()
+        normalized = {k: query[k] for k in sorted(query.keys())}
+        q = urlencode(normalized, doseq=True, quote_via=quote)
+        digest = hashlib.sha512(q.encode()).hexdigest()
+        payload["query_hash"] = digest
         payload["query_hash_alg"] = "SHA512"
 
     header = {"typ": "JWT", "alg": "HS256"}

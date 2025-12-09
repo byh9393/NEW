@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import re
+from urllib.parse import urlencode
 
 from upbit_bot.trading.executor import _jwt_token
 
@@ -31,7 +32,7 @@ def test_jwt_token_is_urlsafe_and_signed():
     assert payload["query_hash_alg"] == "SHA512"
     assert payload["nonce"].isdigit()
 
-    expected_query = json.dumps(query, separators=(",", ":"), ensure_ascii=False)
+    expected_query = urlencode({k: query[k] for k in sorted(query.keys())}, doseq=True)
     expected_hash = hashlib.sha512(expected_query.encode()).hexdigest()
     assert payload["query_hash"] == expected_hash
 
