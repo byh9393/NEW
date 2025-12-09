@@ -765,17 +765,31 @@ class DesktopDashboard(QMainWindow):
         market = self.chart_selector.currentText()
         self.ax.clear()
         self.ax.set_title(market or "Select Market")
-        if market and market in self.price_history:
-            prices = np.array(self.price_history[market], dtype=float)
-            if prices.size > 1:
-                self.ax.plot(prices, color="#60a5fa", label="Price", linewidth=1.2)
-                if len(prices) >= 9:
-                    ema9 = pd.Series(prices).ewm(span=9).mean()
-                    ema21 = pd.Series(prices).ewm(span=21).mean()
-                    self.ax.plot(ema9, color="#22d3ee", label="EMA9", linewidth=1.0, alpha=0.9)
-                    self.ax.plot(ema21, color="#a855f7", label="EMA21", linewidth=1.0, alpha=0.9)
-                self.ax.fill_between(range(len(prices)), prices, color="#2563eb", alpha=0.08)
-                self.ax.scatter(len(prices) - 1, prices[-1], color="#10b981", marker="o", zorder=5)
+        if market:
+            frame = self.runner.bot.ohlcv_service.get_frame(market, "5m") if self.runner.bot else None
+            if frame is not None and not frame.empty:
+                closes = frame["close"].tail(100)
+                highs = frame["high"].tail(100)
+                lows = frame["low"].tail(100)
+                opens = frame["open"].tail(100)
+                x = np.arange(len(closes))
+                for i, (o, h, l, c) in enumerate(zip(opens, highs, lows, closes)):
+                    color = "#22c55e" if c >= o else "#ef4444"
+                    self.ax.vlines(i, l, h, color=color, alpha=0.6)
+                    self.ax.vlines(i, min(o, c), max(o, c), color=color, linewidth=6, alpha=0.8)
+                if len(closes) >= 9:
+                    ema9 = closes.ewm(span=9).mean()
+                    ema21 = closes.ewm(span=21).mean()
+                    self.ax.plot(x, ema9, color="#22d3ee", label="EMA9", linewidth=1.0, alpha=0.9)
+                    self.ax.plot(x, ema21, color="#a855f7", label="EMA21", linewidth=1.0, alpha=0.9)
+                self.ax.fill_between(x, closes, color="#2563eb", alpha=0.05)
+                # trade markers
+                trades = (self.state_store_reader.load_recent_trades(limit=50) if self.state_store_reader else [])
+                for t in trades:
+                    if t.get("market") == market:
+                        idx = len(closes) - 1
+                        color = "#10b981" if t.get("side") == "ask" else "#f59e0b"
+                        self.ax.scatter(idx, t.get("price", closes.iloc[-1]), color=color, marker="^" if t.get("side")=="ask" else "v", zorder=5)
         self.ax.set_xlabel("Ticks")
         self.ax.set_ylabel("Price")
         self.ax.legend(loc="upper left")
@@ -846,6 +860,23 @@ class DesktopDashboard(QMainWindow):
                     else:
                         lbl.setText(f"{val:.2f}" if isinstance(val, float) else str(val))
                 self._refresh_heatmap_list(heatmap)
+            # populate timeline with orders and risk events
+            orders = self.state_store_reader.load_recent_orders(limit=20)
+            risks = self.state_store_reader.load_risk_events(limit=10)
+            for o in orders:
+                key = f"order-{o.get('created_at')}-{o.get('uuid')}"
+                if key in self.timeline_seen:
+                    continue
+                self.timeline_seen.add(key)
+                text = f"ORDER {o.get('market')} {o.get('side')} {o.get('price')} x {o.get('volume')} [{o.get('status')}]"
+                self._add_timeline_event(text, severity="info" if o.get("status") == "done" else "warn")
+            for r in risks:
+                key = f"risk-{r.get('created_at')}-{r.get('market')}"
+                if key in self.timeline_seen:
+                    continue
+                self.timeline_seen.add(key)
+                text = f"RISK {r.get('market')}: {r.get('reason')}"
+                self._add_timeline_event(text, severity="error")
         except Exception:
             return
 

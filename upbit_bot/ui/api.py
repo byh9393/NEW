@@ -102,6 +102,11 @@ def get_app(db_path: str | Path = "./.state/trading.db", bot: Any = None) -> Fas
         curve = store.load_equity_curve(limit=limit)
         return {"equity_curve": curve}
 
+    @app.get("/backtest/by-market")
+    def backtest_by_market(store: SQLiteStateStore = Depends(store_dep)) -> dict:
+        # placeholder: if stored somewhere else, wire here; returning empty structure for now
+        return {"by_market": {}}
+
     @app.get("/heatmap")
     def heatmap(store: SQLiteStateStore = Depends(store_dep)) -> dict:
         state = store.load_strategy_state() or {}
