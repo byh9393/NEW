@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -319,6 +320,7 @@ class DesktopDashboard(QMainWindow):
         self.tabs.addTab(self._build_strategy_tab(), "전략 모니터링")
         self.tabs.addTab(self._build_settings_tab(), "설정")
         self.tabs.addTab(self._build_logs_tab(), "로그&알림")
+        self.tabs.addTab(self._build_insights_tab(), "인사이트")
 
         layout.addWidget(self.tabs)
         self.setCentralWidget(central)
@@ -624,6 +626,28 @@ class DesktopDashboard(QMainWindow):
         layout.addWidget(text_box)
         return tab
 
+    def _build_insights_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        factor_box = self._create_card_frame("Factor Snapshot")
+        factor_layout = QFormLayout(factor_box)
+        self.factor_labels: Dict[str, QLabel] = {}
+        for key in ["composite", "trend", "momentum", "volatility", "volume", "regime"]:
+            lbl = QLabel("-")
+            lbl.setStyleSheet("font-size:16px; font-weight:bold;")
+            factor_layout.addRow(key.capitalize(), lbl)
+            self.factor_labels[key] = lbl
+
+        heatmap_box = self._create_card_frame("Heatmap Top Picks")
+        heatmap_layout = QVBoxLayout(heatmap_box)
+        self.heatmap_list = QListWidget()
+        heatmap_layout.addWidget(self.heatmap_list)
+
+        layout.addWidget(factor_box, 1)
+        layout.addWidget(heatmap_box, 2)
+        return tab
+
     # 이벤트 처리
     def start_trading(self) -> None:
         text = self.market_input.text().strip()
@@ -773,6 +797,13 @@ class DesktopDashboard(QMainWindow):
             self.heatmap_ax.text(x, y, label, ha="center", va="center", color="black")
         self.heatmap_canvas.draw_idle()
 
+    def _refresh_heatmap_list(self, entries: List[Dict[str, float]]) -> None:
+        self.heatmap_list.clear()
+        top = sorted(entries, key=lambda e: e.get("composite", 0), reverse=True)[:20]
+        for item in top:
+            text = f"{item.get('market','')} | C {item.get('composite',0)*100:.1f} / T {item.get('trend',0)*100:.1f} / M {item.get('momentum',0)*100:.1f}"
+            self.heatmap_list.addItem(text)
+
     def _refresh_equity_curve(self) -> None:
         self.equity_ax.clear()
         if self.equity_history:
@@ -798,6 +829,16 @@ class DesktopDashboard(QMainWindow):
             if heatmap:
                 self.heatmap_cache = heatmap
                 self._refresh_heatmap()
+            # update factor tiles from first heatmap entry
+            if heatmap and self.factor_labels:
+                top = heatmap[0]
+                for key, lbl in self.factor_labels.items():
+                    val = top.get(key)
+                    if val is None:
+                        lbl.setText("-")
+                    else:
+                        lbl.setText(f"{val:.2f}" if isinstance(val, float) else str(val))
+                self._refresh_heatmap_list(heatmap)
         except Exception:
             return
 
