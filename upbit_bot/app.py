@@ -39,7 +39,7 @@ from upbit_bot.trading.executor import (
 from upbit_bot.trading.exit_rules import evaluate_exit, compute_stop_targets
 from upbit_bot.trading.risk_portfolio import RiskLimits, RiskPortfolioManager
 from upbit_bot.storage import SQLiteStateStore
-from upbit_bot.monitoring.alerts import AlertSink
+from upbit_bot.monitoring.alerts import AlertSink, TelegramConfig
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -149,6 +149,10 @@ class TradingBot:
         self.state_store = state_store or SQLiteStateStore()
         self.state_store.ensure_schema()
         self.alert_sink = AlertSink()
+        tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if tg_token and tg_chat:
+            self.alert_sink = AlertSink(TelegramConfig(bot_token=tg_token, chat_id=tg_chat))
         self.global_enabled: bool = True
         self.emergency_stop_active: bool = False
         self.force_exit_on_stop: bool = False
@@ -544,13 +548,7 @@ class TradingBot:
         except Exception:
             logger.exception("리스크 이벤트 기록 실패")
         try:
-            self.alert_sink.notify(
-                AlertMessage(
-                    title=f"리스크 이벤트 - {market}",
-                    detail=reason,
-                    severity=Severity.WARNING,
-                )
-            )
+            self.alert_sink.notify(f"리스크 이벤트 - {market}", reason)
         except Exception:
             logger.exception("알림 전송 실패")
 

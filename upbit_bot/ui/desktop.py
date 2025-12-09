@@ -299,6 +299,7 @@ class DesktopDashboard(QMainWindow):
         self.trade_history_model = TradeHistoryModel()
         self.error_log_model = ErrorLogTableModel()
         self.state_store_reader: Optional[SQLiteStateStore] = None
+        self.timeline_seen: set[str] = set()
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_state_store)
         self._poll_timer.start(2000)

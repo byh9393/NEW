@@ -304,6 +304,20 @@ class SQLiteStateStore:
         rows = cur.fetchall()
         return [dict(row) for row in rows]
 
+    def load_recent_trades(self, *, limit: int = 50) -> List[dict]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT order_uuid, market, side, price, volume, fee, net_amount, created_at
+            FROM trades
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+
     def record_myorder_event(self, payload: dict) -> None:
         """Persist a minimal order/trade event coming from myOrder stream."""
         if not payload:
