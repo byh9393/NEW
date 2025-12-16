@@ -55,6 +55,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import matplotlib
+from matplotlib import font_manager
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.lines import Line2D
 from matplotlib.figure import Figure
@@ -62,6 +64,7 @@ from matplotlib.ticker import FuncFormatter
 
 from upbit_bot.app import DecisionUpdate, TradingBot
 from upbit_bot.data.market_fetcher import fetch_markets
+from upbit_bot.data.upbit_adapter import UpbitAdapter
 from upbit_bot.indicators import technical
 from upbit_bot.storage import SQLiteStateStore
 
@@ -307,6 +310,8 @@ class DesktopDashboard(QMainWindow):
         self.setWindowTitle("Upbit PySide6 대시보드")
         self.resize(1400, 900)
 
+        self._configure_matplotlib_fonts()
+
         self.adapter = UpdateAdapter()
         self.runner = BotRunner(self.adapter.on_update)
         self.adapter.update_received.connect(self._handle_update)
@@ -329,6 +334,9 @@ class DesktopDashboard(QMainWindow):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_state_store)
         self._poll_timer.start(2000)
+        self._market_fetch_thread: Optional[threading.Thread] = None
+        self._market_fetch_token = 0
+        self._market_timeout_timer: Optional[QTimer] = None
 
         self._init_ui()
         self._apply_dark_theme()
@@ -690,14 +698,57 @@ class DesktopDashboard(QMainWindow):
 
     # 이벤트 처리
     def start_trading(self) -> None:
+        if self._market_fetch_thread and self._market_fetch_thread.is_alive():
+            self._show_banner("이미 마켓 조회 중입니다. 잠시만 기다려주세요.", success=False, severity="warn")
+            return
+
         text = self.market_input.text().strip()
         if text:
             markets = [m.strip().upper() for m in text.split(",") if m.strip()]
-        else:
-            markets = fetch_markets(is_fiat=True, fiat_symbol="KRW", top_by_volume=5)
+            self._start_with_markets(markets)
+            return
 
+        self.start_btn.setEnabled(False)
+        self.status_label.setText("마켓 조회 중...")
+
+        self._market_fetch_token += 1
+        token = self._market_fetch_token
+
+        if self._market_timeout_timer:
+            self._market_timeout_timer.stop()
+        self._market_timeout_timer = QTimer(self)
+        self._market_timeout_timer.setSingleShot(True)
+        self._market_timeout_timer.timeout.connect(lambda: self._on_market_fetch_timeout(token))
+        self._market_timeout_timer.start(12000)
+
+        def _fetch_markets() -> None:
+            try:
+                markets_result = fetch_markets(
+                    is_fiat=True,
+                    fiat_symbol="KRW",
+                    top_by_volume=5,
+                    adapter=UpbitAdapter(timeout=4, max_retries=1, backoff=0.3),
+                )
+            except Exception as exc:  # pragma: no cover - 네트워크 예외 방어
+                QTimer.singleShot(0, lambda: self._handle_market_fetch_failure(exc, token))
+                return
+            QTimer.singleShot(0, lambda: self._finish_market_fetch(markets_result, token))
+
+        self._market_fetch_thread = threading.Thread(target=_fetch_markets, daemon=True)
+        self._market_fetch_thread.start()
+
+    def _finish_market_fetch(self, markets: List[str], token: int) -> None:
+        if token != self._market_fetch_token:
+            return
+        self._clear_market_fetch_timer()
+        self._market_fetch_thread = None
+        self._start_with_markets(markets)
+
+    def _start_with_markets(self, markets: List[str]) -> None:
         if not markets:
             QMessageBox.warning(self, "마켓 없음", "구독할 마켓을 찾지 못했습니다.")
+            self.start_btn.setEnabled(True)
+            self.status_label.setText("대기 중")
             return
 
         self.runner.start(markets, simulated=self.simulated_check.isChecked(), use_ai=self.ai_check.isChecked())
@@ -707,6 +758,26 @@ class DesktopDashboard(QMainWindow):
         self._show_banner(f"{len(markets)}개 마켓 구독 시작", success=True, severity="success")
         self.status_label.setText(f"실행 중 | 모니터링 {len(markets)}개")
         self._add_timeline_event("거래 시작", severity="success")
+
+    def _on_market_fetch_timeout(self, token: int) -> None:
+        if token != self._market_fetch_token:
+            return
+        self._market_fetch_thread = None
+        self._handle_market_fetch_failure(TimeoutError("마켓 조회가 제한 시간 내 완료되지 않았습니다."), token)
+
+    def _clear_market_fetch_timer(self) -> None:
+        if self._market_timeout_timer:
+            self._market_timeout_timer.stop()
+            self._market_timeout_timer = None
+
+    def _handle_market_fetch_failure(self, exc: Exception, token: Optional[int] = None) -> None:
+        if token is not None and token != self._market_fetch_token:
+            return
+        self._clear_market_fetch_timer()
+        self._market_fetch_thread = None
+        self._show_banner(f"마켓 조회 실패: {exc}", success=False, severity="error")
+        self.start_btn.setEnabled(True)
+        self.status_label.setText("대기 중")
 
     def stop_trading(self) -> None:
         self.runner.stop()
@@ -986,8 +1057,11 @@ class DesktopDashboard(QMainWindow):
                 self.timeline_seen.add(key)
                 text = f"RISK {r.get('market')}: {r.get('reason')}"
                 self._add_timeline_event(text, severity="error")
-        except Exception:
-            return
+        except Exception as exc:  # pragma: no cover - UI resilience
+            self._add_timeline_event(f"상태 스토어 읽기 오류: {exc}", severity="warn")
+        finally:
+            # 주기 호출에서 예외 후에도 타이머 루프가 멈추지 않도록 보장
+            pass
 
     def _update_status_badges(self, snapshot) -> None:
         bot = self.runner.bot
@@ -1008,6 +1082,29 @@ class DesktopDashboard(QMainWindow):
         self.ws_status_badge.setText(f"WebSocket: {ws_state}")
         ws_severity = "success" if ws_state == "연결 유지" else "info"
         self._set_badge_style(self.ws_status_badge, ws_severity)
+
+    def _configure_matplotlib_fonts(self) -> None:
+        """한글 글꼴을 우선 적용해 그래프 깨짐과 경고를 방지."""
+
+        candidates = [
+            "Malgun Gothic",
+            "AppleGothic",
+            "NanumGothic",
+            "Noto Sans CJK KR",
+            "Noto Sans KR",
+        ]
+
+        for name in candidates:
+            try:
+                font_manager.findfont(name, fallback_to_default=False)
+            except ValueError:
+                continue
+            matplotlib.rcParams["font.family"] = name
+            break
+        else:
+            matplotlib.rcParams["font.family"] = "DejaVu Sans"
+
+        matplotlib.rcParams["axes.unicode_minus"] = False
 
     def _set_badge_style(self, label: QLabel, severity: str) -> None:
         palette = self._theme_palette()
