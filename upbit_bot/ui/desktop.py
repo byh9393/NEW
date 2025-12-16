@@ -415,7 +415,14 @@ class DesktopDashboard(QMainWindow):
     def _build_banner(self) -> QWidget:
         self.banner = QLabel("주문/에러 알림이 여기에 표시됩니다.")
         self.banner.setAlignment(Qt.AlignCenter)
-        self.banner.setStyleSheet("QLabel { background:#f0f0f0; border-radius:6px; padding:6px; }")
+        colors = self._theme_palette()["status"]["info"]
+        border = self._theme_palette()["banner_border"]
+        self.banner.setStyleSheet(
+            "QLabel { "
+            f"background:{colors['bg']}; color:{colors['text']}; border-radius:6px; padding:6px; "
+            f"border: 1px solid {border};"
+            "}"
+        )
         return self.banner
 
     def _create_card_frame(self, title: str) -> QGroupBox:
@@ -1002,25 +1009,21 @@ class DesktopDashboard(QMainWindow):
         self._set_badge_style(self.ws_status_badge, ws_severity)
 
     def _set_badge_style(self, label: QLabel, severity: str) -> None:
-        colors = {
-            "success": "#d1f2d9",
-            "info": "#e6f7ff",
-            "warn": "#fff3cd",
-            "error": "#f8d7da",
-        }
+        palette = self._theme_palette()
+        colors = palette["status"].get(severity, palette["status"]["info"])
         label.setStyleSheet(
-            f"padding:6px; border-radius:6px; background:{colors.get(severity, '#e6f7ff')};"
+            "padding:6px; border-radius:6px; "
+            f"background:{colors['bg']}; color:{colors['text']}; "
+            f"border: 1px solid {palette['border']};"
         )
 
     def _add_timeline_event(self, text: str, *, severity: str = "info") -> None:
         item = QListWidgetItem(text)
-        color_map = {
-            "success": QColor("#d1f2d9"),
-            "info": QColor("#e6f7ff"),
-            "warn": QColor("#fff3cd"),
-            "error": QColor("#f8d7da"),
-        }
-        item.setBackground(color_map.get(severity, QColor("#e6f7ff")))
+        palette = self._theme_palette()
+        color_map = palette["status"]
+        colors = color_map.get(severity, color_map["info"])
+        item.setBackground(QColor(colors["bg"]))
+        item.setForeground(QColor(colors["text"]))
         self.timeline_list.insertItem(0, item)
         if self.timeline_list.count() > 80:
             self.timeline_list.takeItem(self.timeline_list.count() - 1)
@@ -1066,15 +1069,17 @@ class DesktopDashboard(QMainWindow):
         self._add_timeline_event(msg, severity="info" if enabled else "warn")
 
     def _show_banner(self, text: str, *, success: bool, severity: Optional[str] = None) -> None:
-        color_map = {
-            "success": "#d1f2d9",
-            "info": "#e6f7ff",
-            "warn": "#fff3cd",
-            "error": "#ffd6d6",
-        }
-        color = color_map.get(severity or ("success" if success else "warn"), "#e6f7ff")
+        palette = self._theme_palette()
+        status_colors = palette["status"]
+        color_key = severity or ("success" if success else "warn")
+        colors = status_colors.get(color_key, status_colors["info"])
         self.banner.setText(text)
-        self.banner.setStyleSheet(f"QLabel {{ background:{color}; border-radius:6px; padding:6px; }}")
+        self.banner.setStyleSheet(
+            "QLabel { "
+            f"background:{colors['bg']}; color:{colors['text']}; border-radius:6px; padding:6px; "
+            f"border: 1px solid {palette['banner_border']};"
+            "}"
+        )
 
     def _toggle_theme(self, checked: bool) -> None:
         if checked:
@@ -1088,19 +1093,21 @@ class DesktopDashboard(QMainWindow):
         app = QApplication.instance()
         if not app:
             return
+        self.is_dark = True
+        palette_config = self._theme_palette()
         palette = QPalette()
-        palette.setColor(QPalette.Window, QColor("#0b1224"))
-        palette.setColor(QPalette.WindowText, QColor("#e5e7eb"))
-        palette.setColor(QPalette.Base, QColor("#0f172a"))
-        palette.setColor(QPalette.AlternateBase, QColor("#111827"))
-        palette.setColor(QPalette.ToolTipBase, QColor("#1f2937"))
-        palette.setColor(QPalette.ToolTipText, QColor("#e5e7eb"))
-        palette.setColor(QPalette.Text, QColor("#e5e7eb"))
-        palette.setColor(QPalette.Button, QColor("#111827"))
-        palette.setColor(QPalette.ButtonText, QColor("#e5e7eb"))
-        palette.setColor(QPalette.BrightText, QColor("#22d3ee"))
-        palette.setColor(QPalette.Highlight, QColor("#6366f1"))
-        palette.setColor(QPalette.HighlightedText, QColor("#0b1224"))
+        palette.setColor(QPalette.Window, QColor(palette_config["bg"]))
+        palette.setColor(QPalette.WindowText, QColor(palette_config["text"]))
+        palette.setColor(QPalette.Base, QColor(palette_config["card"]))
+        palette.setColor(QPalette.AlternateBase, QColor(palette_config["table_alt"]))
+        palette.setColor(QPalette.ToolTipBase, QColor(palette_config["tooltip_bg"]))
+        palette.setColor(QPalette.ToolTipText, QColor(palette_config["text"]))
+        palette.setColor(QPalette.Text, QColor(palette_config["text"]))
+        palette.setColor(QPalette.Button, QColor(palette_config["card"]))
+        palette.setColor(QPalette.ButtonText, QColor(palette_config["text"]))
+        palette.setColor(QPalette.BrightText, QColor(palette_config["accent_alt"]))
+        palette.setColor(QPalette.Highlight, QColor(palette_config["selection_bg"]))
+        palette.setColor(QPalette.HighlightedText, QColor(palette_config["selection_text"]))
         app.setPalette(palette)
         self._apply_modern_styles()
 
@@ -1108,29 +1115,36 @@ class DesktopDashboard(QMainWindow):
         app = QApplication.instance()
         if not app:
             return
+        self.is_dark = False
+        palette_config = self._theme_palette(light=True)
         palette = QPalette()
-        palette.setColor(QPalette.Window, QColor("#f8fafc"))
-        palette.setColor(QPalette.WindowText, QColor("#0f172a"))
-        palette.setColor(QPalette.Base, QColor("#ffffff"))
-        palette.setColor(QPalette.AlternateBase, QColor("#e2e8f0"))
-        palette.setColor(QPalette.ToolTipBase, QColor("#e2e8f0"))
-        palette.setColor(QPalette.ToolTipText, QColor("#0f172a"))
-        palette.setColor(QPalette.Text, QColor("#0f172a"))
-        palette.setColor(QPalette.Button, QColor("#e2e8f0"))
-        palette.setColor(QPalette.ButtonText, QColor("#0f172a"))
-        palette.setColor(QPalette.BrightText, QColor("#0ea5e9"))
-        palette.setColor(QPalette.Highlight, QColor("#6366f1"))
-        palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+        palette.setColor(QPalette.Window, QColor(palette_config["bg"]))
+        palette.setColor(QPalette.WindowText, QColor(palette_config["text"]))
+        palette.setColor(QPalette.Base, QColor(palette_config["card"]))
+        palette.setColor(QPalette.AlternateBase, QColor(palette_config["table_alt"]))
+        palette.setColor(QPalette.ToolTipBase, QColor(palette_config["tooltip_bg"]))
+        palette.setColor(QPalette.ToolTipText, QColor(palette_config["text"]))
+        palette.setColor(QPalette.Text, QColor(palette_config["text"]))
+        palette.setColor(QPalette.Button, QColor(palette_config["card"]))
+        palette.setColor(QPalette.ButtonText, QColor(palette_config["text"]))
+        palette.setColor(QPalette.BrightText, QColor(palette_config["accent_alt"]))
+        palette.setColor(QPalette.Highlight, QColor(palette_config["selection_bg"]))
+        palette.setColor(QPalette.HighlightedText, QColor(palette_config["selection_text"]))
         app.setPalette(palette)
         self._apply_modern_styles(light=True)
 
     def _apply_modern_styles(self, light: bool = False) -> None:
-        accent = "#6366f1"
-        bg = "#0b1224" if not light else "#f8fafc"
-        card = "#111827" if not light else "#ffffff"
-        border = "#1f2937" if not light else "#e2e8f0"
-        text = "#e5e7eb" if not light else "#0f172a"
-        tab = "#111827" if not light else "#e2e8f0"
+        palette = self._theme_palette(light)
+        accent = palette["accent"]
+        bg = palette["bg"]
+        card = palette["card"]
+        border = palette["border"]
+        text = palette["text"]
+        tab = palette["tab_bg"]
+        input_bg = palette["input_bg"]
+        muted = palette["muted"]
+        header_bg = palette["header_bg"]
+        header_text = palette["header_text"]
         self.setStyleSheet(
             f"""
             QWidget {{ background-color: {bg}; color: {text}; }}
@@ -1143,33 +1157,104 @@ class DesktopDashboard(QMainWindow):
             }}
             QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 2px 6px; color: {accent}; }}
             QPushButton {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {accent}, stop:1 #22d3ee);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {accent}, stop:1 {palette['accent_alt']});
                 color: white; border: none; padding: 8px 14px; border-radius: 8px;
             }}
-            QPushButton:hover {{ opacity: 0.95; }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {palette['accent_alt']}, stop:1 {accent});
+            }}
+            QPushButton:disabled {{
+                background: {border}; color: {muted};
+            }}
             QLineEdit, QComboBox {{
-                background: #0f172a; border: 1px solid {border}; padding: 6px 8px; border-radius: 8px;
-                selection-background-color: {accent}; selection-color: #fff;
+                background: {input_bg}; border: 1px solid {border}; padding: 6px 8px; border-radius: 8px;
+                selection-background-color: {palette['selection_bg']}; selection-color: {palette['selection_text']};
+            }}
+            QLineEdit:focus, QComboBox:focus {{
+                border: 1px solid {accent};
+                box-shadow: 0 0 0 2px {accent}33;
             }}
             QTableView {{
-                background: #0f172a;
+                background: {card};
                 gridline-color: {border};
-                alternate-background-color: #0b1224;
-                selection-background-color: #1d4ed8;
-                selection-color: #e5e7eb;
+                alternate-background-color: {palette['table_alt']};
+                selection-background-color: {palette['selection_bg']};
+                selection-color: {palette['selection_text']};
             }}
             QHeaderView::section {{
-                background: #111827;
-                color: #cbd5e1;
+                background: {header_bg};
+                color: {header_text};
                 padding: 6px;
                 border: 1px solid {border};
             }}
             QTabWidget::pane {{ border: 1px solid {border}; border-radius: 8px; padding: 6px; }}
-            QTabBar::tab {{ background: {tab}; color: #cbd5e1; padding: 8px 14px; border-radius: 6px; margin: 2px; }}
-            QTabBar::tab:selected {{ background: #1f2937; color: #e5e7eb; }}
-            QListWidget {{ background: #0f172a; border: 1px solid {border}; border-radius: 8px; }}
+            QTabBar::tab {{ background: {tab}; color: {header_text}; padding: 8px 14px; border-radius: 6px; margin: 2px; }}
+            QTabBar::tab:selected {{ background: {palette['tab_selected_bg']}; color: {text}; }}
+            QListWidget {{ background: {card}; border: 1px solid {border}; border-radius: 8px; }}
+            QListWidget::item:selected {{ background: {palette['selection_bg']}; color: {palette['selection_text']}; }}
+            QToolTip {{
+                color: {text};
+                background-color: {palette['tooltip_bg']};
+                border: 1px solid {border};
+                padding: 6px;
+            }}
             """
         )
+
+    def _theme_palette(self, light: Optional[bool] = None) -> Dict[str, Dict[str, str] | str]:
+        is_light = light if light is not None else not getattr(self, "is_dark", True)
+        if is_light:
+            return {
+                "accent": "#6366f1",
+                "accent_alt": "#22c55e",
+                "bg": "#f8fafc",
+                "card": "#ffffff",
+                "border": "#e2e8f0",
+                "text": "#0f172a",
+                "muted": "#475569",
+                "input_bg": "#ffffff",
+                "header_bg": "#e2e8f0",
+                "header_text": "#0f172a",
+                "tab_bg": "#e2e8f0",
+                "tab_selected_bg": "#ffffff",
+                "tooltip_bg": "#ffffff",
+                "selection_bg": "#2563eb",
+                "selection_text": "#ffffff",
+                "table_alt": "#f1f5f9",
+                "banner_border": "#cbd5e1",
+                "status": {
+                    "success": {"bg": "#e3f9e5", "text": "#065f46"},
+                    "info": {"bg": "#e0f2fe", "text": "#075985"},
+                    "warn": {"bg": "#fff7e0", "text": "#92400e"},
+                    "error": {"bg": "#fde8e8", "text": "#7f1d1d"},
+                },
+            }
+
+        return {
+            "accent": "#7c8bff",
+            "accent_alt": "#22d3ee",
+            "bg": "#0b1224",
+            "card": "#0f172a",
+            "border": "#1f2937",
+            "text": "#f8fafc",
+            "muted": "#cbd5e1",
+            "input_bg": "#0b1224",
+            "header_bg": "#111827",
+            "header_text": "#e2e8f0",
+            "tab_bg": "#111827",
+            "tab_selected_bg": "#1f2937",
+            "tooltip_bg": "#111827",
+            "selection_bg": "#1d4ed8",
+            "selection_text": "#f8fafc",
+            "table_alt": "#0d1428",
+            "banner_border": "#23314f",
+            "status": {
+                "success": {"bg": "#1b4332", "text": "#d1fae5"},
+                "info": {"bg": "#12324d", "text": "#cfe4ff"},
+                "warn": {"bg": "#4b3212", "text": "#ffe7a3"},
+                "error": {"bg": "#4c1d1d", "text": "#fecdd3"},
+            },
+        }
 
 
 class HoldingTableModel(QAbstractTableModel):
