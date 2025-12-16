@@ -1,7 +1,5 @@
 """
-공통 손절·익절·트레일링·시간 청산 로직.
-
-TradingBot이 포지션 보유 여부와 독립적으로 활용할 수 있도록 유틸 함수로 분리했다.
+Supertrend와 200EMA만 사용하는 포지션 청산 규칙.
 """
 from __future__ import annotations
 
@@ -12,7 +10,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from upbit_bot.indicators.technical import atr_like, bollinger_bands
+from upbit_bot.indicators.technical import ema, supertrend
 
 
 @dataclass
@@ -22,10 +20,11 @@ class ExitSignal:
     stop_level: Optional[float] = None
 
 
-def compute_stop_targets(prices: pd.Series, entry_price: float, *, atr_mult_stop: float = 1.6, atr_mult_target: float = 2.8) -> tuple[float, float]:
-    atr = float(np.nan_to_num(atr_like(prices).iloc[-1]))
-    stop_loss = max(0.0, entry_price - atr * atr_mult_stop)
-    take_profit = entry_price + atr * atr_mult_target
+def compute_stop_targets(prices: pd.Series, entry_price: float, *, risk_reward: float = 1.8) -> tuple[float, float]:
+    st = supertrend(prices, period=7, multiplier=2.0)
+    st_level = float(st["supertrend"].iloc[-1]) if not st.empty else entry_price * 0.99
+    stop_loss = max(0.0, min(entry_price, st_level))
+    take_profit = entry_price + (entry_price - stop_loss) * risk_reward
     return stop_loss, take_profit
 
 
@@ -43,22 +42,19 @@ def evaluate_exit(
     last_price = float(prices.iloc[-1])
     stop_loss, take_profit = compute_stop_targets(prices, entry_price)
 
+    ema_long = ema(prices, 200).iloc[-1] if prices.size >= 50 else float("nan")
+    st_dir = int(supertrend(prices, period=10, multiplier=3.0)["direction"].iloc[-1]) if prices.size >= 20 else 0
+
     if last_price <= stop_loss:
-        return ExitSignal(True, f"ATR 기반 손절 {stop_loss:.2f} 하향 돌파", stop_loss)
+        return ExitSignal(True, f"Supertrend 기반 손절 {stop_loss:.2f} 하향 돌파", stop_loss)
     if last_price >= take_profit:
-        return ExitSignal(True, f"ATR 기반 익절 {take_profit:.2f} 도달", take_profit)
+        return ExitSignal(True, f"Supertrend 기반 익절 {take_profit:.2f} 도달", take_profit)
 
-    bb = bollinger_bands(prices)
-    bb_upper = float(bb["upper"].iloc[-1])
-    bb_middle = float(bb["middle"].iloc[-1])
-    bb_lower = float(bb["lower"].iloc[-1])
-    if last_price < bb_lower or last_price < bb_middle * 0.985:
-        return ExitSignal(True, "볼린저 하단 이탈/중심선 재진입", bb_lower)
+    if st_dir == -1:
+        return ExitSignal(True, "Supertrend 하락 전환", stop_loss)
 
-    rolling_high = float(prices.rolling(window=min(120, len(prices))).max().iloc[-1])
-    trailing_stop = rolling_high - (atr_like(prices).iloc[-1] * trail_multiplier)
-    if last_price <= trailing_stop:
-        return ExitSignal(True, f"트레일링 스탑 {trailing_stop:.2f} 발동", trailing_stop)
+    if not np.isnan(ema_long) and last_price < ema_long:
+        return ExitSignal(True, "200EMA 하향 이탈", ema_long)
 
     if entry_time:
         held_hours = (datetime.utcnow() - entry_time).total_seconds() / 3600

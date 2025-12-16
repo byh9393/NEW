@@ -511,12 +511,12 @@ class DesktopDashboard(QMainWindow):
         controls = QHBoxLayout()
         controls.addWidget(QLabel("전략별 ON/OFF"))
         self.strategy_switches: Dict[str, QCheckBox] = {}
-        for name in ["트렌드", "역추세", "브레이크아웃"]:
-            chk = QCheckBox(name)
+        for display, key in [("Supertrend", "supertrend")]:
+            chk = QCheckBox(display)
             chk.setChecked(True)
-            chk.toggled.connect(lambda state, n=name: self._toggle_strategy(n, state))
+            chk.toggled.connect(lambda state, n=key: self._toggle_strategy(n, state))
             controls.addWidget(chk)
-            self.strategy_switches[name] = chk
+            self.strategy_switches[key] = chk
         controls.addStretch(1)
         layout.addLayout(controls)
 

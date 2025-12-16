@@ -89,6 +89,52 @@ def keltner_channel(series: pd.Series, period: int = 20, atr_mult: float = 1.5) 
     return pd.DataFrame({"upper": upper, "middle": basis, "lower": lower})
 
 
+def supertrend(series: pd.Series, period: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
+    """종가만으로 계산한 Supertrend와 추세 방향(1: 상승, -1: 하락)."""
+
+    if series.size < max(period, 2):
+        return pd.DataFrame(
+            {
+                "supertrend": pd.Series(index=series.index, dtype=float),
+                "direction": pd.Series(index=series.index, dtype=int),
+            }
+        )
+
+    price = series.reset_index(drop=True)
+    atr = atr_like(price, period).reset_index(drop=True)
+    hl2 = price  # 고가/저가가 없으므로 종가를 근사값으로 사용
+    basic_upper = hl2 + multiplier * atr
+    basic_lower = hl2 - multiplier * atr
+
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    direction = np.ones(len(price), dtype=int)
+    trend_values = basic_lower.copy()
+
+    for i in range(1, len(price)):
+        if basic_upper[i] < final_upper[i - 1] or price[i - 1] > final_upper[i - 1]:
+            final_upper[i] = basic_upper[i]
+        else:
+            final_upper[i] = final_upper[i - 1]
+
+        if basic_lower[i] > final_lower[i - 1] or price[i - 1] < final_lower[i - 1]:
+            final_lower[i] = basic_lower[i]
+        else:
+            final_lower[i] = final_lower[i - 1]
+
+        if price[i] > final_upper[i - 1]:
+            direction[i] = 1
+        elif price[i] < final_lower[i - 1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i - 1]
+
+        trend_values[i] = final_lower[i] if direction[i] == 1 else final_upper[i]
+
+    result = pd.DataFrame({"supertrend": trend_values, "direction": direction}, index=series.index)
+    return result
+
+
 def composite_score(price_history: pd.Series) -> float:
     """
     여러 지표를 결합해 -100 ~ 100 사이의 점수로 정규화.
