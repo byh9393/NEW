@@ -22,8 +22,6 @@ from upbit_bot.data.universe import UniverseManager
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
 from upbit_bot.strategy.multiframe import MultiTimeframeAnalyzer, MultiTimeframeFactor
-from upbit_bot.strategy.breakout import breakout_signal
-from upbit_bot.strategy.mean_reversion import mean_reversion_signal
 from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
 from upbit_bot.trading.ws_sync import UpbitWebSocketSync
 from upbit_bot.trading.executor import (
@@ -36,7 +34,7 @@ from upbit_bot.trading.executor import (
     _normalize_price,
     _normalize_volume,
 )
-from upbit_bot.trading.exit_rules import evaluate_exit, compute_stop_targets
+from upbit_bot.trading.exit_rules import evaluate_exit
 from upbit_bot.trading.risk_portfolio import RiskLimits, RiskPortfolioManager
 from upbit_bot.storage import SQLiteStateStore
 from upbit_bot.monitoring.alerts import AlertSink, TelegramConfig
@@ -156,11 +154,7 @@ class TradingBot:
         self.global_enabled: bool = True
         self.emergency_stop_active: bool = False
         self.force_exit_on_stop: bool = False
-        self.strategy_switches: Dict[str, bool] = {
-            "trend": True,
-            "mean_reversion": True,
-            "breakout": True,
-        }
+        self.strategy_switches: Dict[str, bool] = {"supertrend": True}
         self._last_signal_ts: Dict[str, float] = {}
         self._recover_state()
 
@@ -215,14 +209,7 @@ class TradingBot:
             )
 
             base_decision = evaluate(market, primary)
-            decisions: List[Decision] = [base_decision]
-            if self.strategy_switches.get("breakout", True):
-                decisions.append(breakout_signal(market, primary, frames_map.get("5m", {}).get("volume")))
-            if self.strategy_switches.get("mean_reversion", True):
-                decisions.append(mean_reversion_signal(market, primary))
-
-            # Choose the strongest signal by absolute score
-            decision = max(decisions, key=lambda d: abs(d.score))
+            decision = base_decision
             ai_raw = ""
 
             snapshot = self.account_snapshot
@@ -569,21 +556,11 @@ class TradingBot:
         if higher_trend < 0.55:
             return f"상위 추세 필터 미충족 ({higher_trend:.2f})"
 
-        last_price = float(primary.iloc[-1])
-        stop_loss, take_profit = compute_stop_targets(primary, last_price)
-        stop_distance = last_price - stop_loss
-        target_distance = take_profit - last_price
-        if stop_distance <= 0 or target_distance / max(stop_distance, 1e-6) < 1.2:
-            return "ATR 대비 목표/손절 리스크-리워드 미충족"
-
         if volume_rank and volume_rank > self.universe_top_n:
             return f"거래대금 상위 {self.universe_top_n}개 외 종목"
 
-        if multi_factor.composite < 0.52 or multi_factor.momentum < 0.45 or multi_factor.trend < 0.5:
-            return (
-                f"팩터 엔진 합성점수 부족 (합성 {multi_factor.composite:.2f}/"
-                f"추세 {multi_factor.trend:.2f}/모멘텀 {multi_factor.momentum:.2f})"
-            )
+        if multi_factor.trend < 0.55:
+            return f"Supertrend/200EMA 추세 부족 ({multi_factor.trend:.2f})"
 
         correlated_count = self._count_correlated_positions(market, correlation_map)
         risk_reason = self.risk_manager.validate_entry(

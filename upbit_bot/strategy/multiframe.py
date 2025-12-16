@@ -12,7 +12,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
-from upbit_bot.indicators.technical import bollinger_bands, ema, rsi, atr_like
+from upbit_bot.indicators.technical import ema, supertrend
 
 
 def _normalize(value: float, low: float, high: float) -> float:
@@ -38,11 +38,11 @@ class MultiTimeframeAnalyzer:
     def __init__(self, timeframes: Iterable[str]) -> None:
         self.timeframes = tuple(timeframes)
         self.factor_weights = {
-            "trend": 0.3,
-            "momentum": 0.25,
-            "volatility": 0.15,
-            "volume": 0.2,
-            "correlation": 0.1,
+            "trend": 0.7,
+            "momentum": 0.15,
+            "volatility": 0.05,
+            "volume": 0.05,
+            "correlation": 0.05,
         }
 
     def analyze(
@@ -63,32 +63,21 @@ class MultiTimeframeAnalyzer:
             if frame is None or frame.empty or len(frame) < 20:
                 continue
             closes = frame["close"]
-            atr = atr_like(closes).iloc[-1]
             price = closes.iloc[-1]
-
-            fast = ema(closes, 8).iloc[-1]
-            slow = ema(closes, 34).iloc[-1]
-            slope = (fast - slow) / (price + 1e-9)
-            trend_norm = _normalize(np.tanh(slope * 12), -1.0, 1.0)
+            st = supertrend(closes)
+            st_dir = int(st["direction"].iloc[-1]) if not st.empty else 0
+            ema_long = ema(closes, 200).iloc[-1] if len(closes) >= 50 else price
+            trend_norm = 1.0 if (price > ema_long and st_dir == 1) else 0.0 if (price < ema_long and st_dir == -1) else 0.5
             trend_scores[tf] = trend_norm
 
-            rsi_val = rsi(closes).iloc[-1]
-            momentum_scores.append(_normalize(rsi_val, 35, 70))
-
-            bb = bollinger_bands(closes)
-            width = (bb["upper"].iloc[-1] - bb["lower"].iloc[-1]) / (price + 1e-9)
-            atr_ratio = atr / (price + 1e-9)
-            vol_signal = _normalize(0.5 - abs(atr_ratio - 0.01) * 12, 0.0, 1.0)
-            squeeze_signal = _normalize(width, 0.01, 0.08)
-            volatility_scores.append((vol_signal + squeeze_signal) / 2)
+            momentum_scores.append(trend_norm)
+            volatility_scores.append(0.5)
 
             if "volume" in frame.columns:
-                recent_vol = frame["volume"].iloc[-1]
-                median_vol = frame["volume"].rolling(window=20).median().iloc[-1]
-                volume_scores.append(_normalize(recent_vol / (median_vol + 1e-9), 0.5, 2.0))
+                volume_scores.append(0.5)
 
             reasons.append(
-                f"{market} {tf} 트렌드 {trend_norm:.2f}, RSI {rsi_val:.1f}, 밴드폭 {width:.3f}, ATR {atr_ratio:.3f}"
+                f"{market} {tf} Supertrend 방향 {st_dir}, 200EMA 대비 {'상' if price > ema_long else '하' if price < ema_long else '동일'}"
             )
 
         trend = float(np.clip(np.mean(list(trend_scores.values()) or [0.5]), 0.0, 1.0))
