@@ -1173,7 +1173,7 @@ class DesktopDashboard(QMainWindow):
             }}
             QLineEdit:focus, QComboBox:focus {{
                 border: 1px solid {accent};
-                box-shadow: 0 0 0 2px {accent}33;
+                /* Qt 스타일시트에서는 box-shadow를 지원하지 않으므로 경고를 피하기 위해 제거 */
             }}
             QTableView {{
                 background: {card};
