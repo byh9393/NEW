@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Dict, List, Sequence
 
 from upbit_bot.data.upbit_adapter import UpbitAdapter
@@ -9,11 +10,21 @@ from upbit_bot.data.upbit_adapter import UpbitAdapter
 logger = logging.getLogger(__name__)
 
 
-def _fetch_24h_volumes(markets: Sequence[str], adapter: UpbitAdapter) -> Dict[str, float]:
-    """요청한 마켓들의 24시간 거래대금을 반환한다."""
+def _fetch_24h_volumes(
+    markets: Sequence[str], adapter: UpbitAdapter, *, deadline: float | None = None
+) -> Dict[str, float]:
+    """요청한 마켓들의 24시간 거래대금을 반환한다.
+
+    마켓 수가 많을 때 여러 번의 REST 호출이 필요하므로, ``deadline`` 을 넘기면
+    이후 배치는 건너뛰어 UI의 전체 타임아웃을 넘지 않도록 방어한다.
+    """
 
     volumes: Dict[str, float] = {}
     for idx in range(0, len(markets), 100):
+        if deadline and time.monotonic() >= deadline:
+            logger.warning("24h 거래대금 조회가 지연되어 일부 배치를 건너뜁니다.")
+            break
+
         batch = markets[idx : idx + 100]
         tickers = adapter.ticker(batch)
         for ticker in tickers:
@@ -45,7 +56,8 @@ def fetch_markets(
 
     if top_by_volume:
         try:
-            volumes = _fetch_24h_volumes(filtered, client)
+            deadline = time.monotonic() + 8
+            volumes = _fetch_24h_volumes(filtered, client, deadline=deadline)
             filtered = sorted(filtered, key=lambda m: volumes.get(m, 0.0), reverse=True)
             filtered = filtered[:top_by_volume]
             logger.info("24시간 거래대금 상위 %d개 시장으로 제한", len(filtered))

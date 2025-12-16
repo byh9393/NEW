@@ -719,7 +719,9 @@ class DesktopDashboard(QMainWindow):
         self._market_timeout_timer = QTimer(self)
         self._market_timeout_timer.setSingleShot(True)
         self._market_timeout_timer.timeout.connect(lambda: self._on_market_fetch_timeout(token))
-        self._market_timeout_timer.start(12000)
+        # 마켓 조회 시 거래대금 순위를 계산하기 위해 여러 REST 호출이 필요하다.
+        # 네트워크가 살짝 지연되면 12초 제한을 넘기는 경우가 있어 여유를 둔다.
+        self._market_timeout_timer.start(20000)
 
         def _fetch_markets() -> None:
             try:
