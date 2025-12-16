@@ -1259,6 +1259,10 @@ class DesktopDashboard(QMainWindow):
         else:
             self._apply_light_theme()
             self.theme_btn.setText("라이트")
+        # 다크/라이트 전환 시 차트 팔레트를 즉시 갱신하여 시각 요소가 밝아지지 않도록 처리
+        self._refresh_chart()
+        self._refresh_heatmap()
+        self._refresh_equity_curve()
 
     def _apply_dark_theme(self) -> None:
         app = QApplication.instance()
