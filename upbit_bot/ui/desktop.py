@@ -893,6 +893,7 @@ class DesktopDashboard(QMainWindow):
                 "supertrend": {},
             },
         )
+        self.ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
         self.ax.set_facecolor(chart_palette.get("bg"))
         self.ax.set_title(market or "Select Market", color=chart_palette.get("text"))
         legend_handles: List[Line2D] = []
@@ -1028,6 +1029,7 @@ class DesktopDashboard(QMainWindow):
             return
         palette = self._theme_palette()
         chart_palette = palette.get("chart", {})
+        self.heatmap_ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
         markets = sorted(entries, key=lambda e: e.get("composite", 0), reverse=True)[:16]
         scores = [m.get("composite", 0) * 100 for m in markets]
         size = int(len(scores) ** 0.5) or 1
@@ -1065,6 +1067,7 @@ class DesktopDashboard(QMainWindow):
         self.equity_ax.clear()
         palette = self._theme_palette()
         chart_palette = palette.get("chart", {})
+        self.equity_ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
         self.equity_ax.set_facecolor(chart_palette.get("bg", palette.get("card")))
         if self.equity_history:
             self.equity_ax.plot(
