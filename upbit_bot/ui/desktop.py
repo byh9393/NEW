@@ -13,7 +13,7 @@ import threading
 from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Deque, Dict, Iterable, List, Optional, Set
+from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -57,13 +57,27 @@ from PySide6.QtWidgets import (
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from upbit_bot.app import DecisionUpdate, TradingBot
 from upbit_bot.data.market_fetcher import fetch_markets
+from upbit_bot.indicators import technical
 from upbit_bot.storage import SQLiteStateStore
 
 PIN_ROLE = Qt.UserRole + 1
 TIMESTAMP_ROLE = Qt.UserRole + 2
+
+_SUPERTREND_CONFIGS: Tuple[Tuple[str, int, float], ...] = (
+    ("weak", 7, 2.0),
+    ("medium", 10, 3.0),
+    ("strong", 14, 4.0),
+)
+
+_SUPERTREND_STYLES: Dict[str, Dict[str, Any]] = {
+    "weak": {"color": "#f59e0b", "linestyle": "--"},
+    "medium": {"color": "#3b82f6", "linestyle": "-.", "alpha": 0.9},
+    "strong": {"color": "#ef4444", "linestyle": "-", "linewidth": 1.4},
+}
 
 
 class UpdateAdapter(QObject):
@@ -765,35 +779,100 @@ class DesktopDashboard(QMainWindow):
         market = self.chart_selector.currentText()
         self.ax.clear()
         self.ax.set_title(market or "Select Market")
+        legend_handles: List[Line2D] = []
         if market:
             frame = self.runner.bot.ohlcv_service.get_frame(market, "5m") if self.runner.bot else None
             if frame is not None and not frame.empty:
-                closes = frame["close"].tail(100)
-                highs = frame["high"].tail(100)
-                lows = frame["low"].tail(100)
-                opens = frame["open"].tail(100)
+                lookback = min(len(frame), 150)
+                closes = frame["close"].tail(lookback)
+                highs = frame["high"].tail(lookback)
+                lows = frame["low"].tail(lookback)
+                opens = frame["open"].tail(lookback)
                 x = np.arange(len(closes))
                 for i, (o, h, l, c) in enumerate(zip(opens, highs, lows, closes)):
                     color = "#22c55e" if c >= o else "#ef4444"
                     self.ax.vlines(i, l, h, color=color, alpha=0.6)
                     self.ax.vlines(i, min(o, c), max(o, c), color=color, linewidth=6, alpha=0.8)
+
+                legend_handles.extend(
+                    [
+                        Line2D([], [], color="#22c55e", linewidth=4, label="상승 캔들"),
+                        Line2D([], [], color="#ef4444", linewidth=4, label="하락 캔들"),
+                    ]
+                )
+
+                ema200_line: Optional[Line2D] = None
+                if len(frame) >= 200:
+                    ema200_series = technical.ema(frame["close"], 200).iloc[-len(closes) :]
+                    ema200_line = self.ax.plot(
+                        x[-len(ema200_series) :],
+                        ema200_series,
+                        color="#f97316",
+                        label="EMA200",
+                        linewidth=1.8,
+                        alpha=0.85,
+                    )[0]
+                    legend_handles.append(ema200_line)
+
                 if len(closes) >= 9:
                     ema9 = closes.ewm(span=9).mean()
                     ema21 = closes.ewm(span=21).mean()
-                    self.ax.plot(x, ema9, color="#22d3ee", label="EMA9", linewidth=1.0, alpha=0.9)
-                    self.ax.plot(x, ema21, color="#a855f7", label="EMA21", linewidth=1.0, alpha=0.9)
+                    ema9_line = self.ax.plot(
+                        x, ema9, color="#22d3ee", label="EMA9", linewidth=1.0, alpha=0.9
+                    )[0]
+                    ema21_line = self.ax.plot(
+                        x, ema21, color="#a855f7", label="EMA21", linewidth=1.0, alpha=0.9
+                    )[0]
+                    legend_handles.extend([ema9_line, ema21_line])
+
+                supertrend_handles: List[Line2D] = []
+                for name, period, mult in _SUPERTREND_CONFIGS:
+                    if len(frame) < max(period, 5):
+                        continue
+                    st_df = technical.supertrend(frame["close"], period=period, multiplier=mult)
+                    series = st_df["supertrend"].iloc[-len(closes) :]
+                    if series.empty:
+                        continue
+                    styles = _SUPERTREND_STYLES.get(name, {})
+                    st_line = self.ax.plot(
+                        x[-len(series) :],
+                        series,
+                        label=f"Supertrend {name}",
+                        linewidth=1.2,
+                        **styles,
+                    )[0]
+                    supertrend_handles.append(st_line)
+                legend_handles.extend(supertrend_handles)
+
                 self.ax.fill_between(x, closes, color="#2563eb", alpha=0.05)
                 # trade markers
                 trades = (self.state_store_reader.load_recent_trades(limit=50) if self.state_store_reader else [])
+                has_buy_trade = False
+                has_sell_trade = False
                 for t in trades:
                     if t.get("market") == market:
                         idx = len(closes) - 1
                         marker_y = t.get("price", closes.iloc[-1])
-                        color = "#10b981" if t.get("side") == "ask" else "#f59e0b"
-                        self.ax.scatter(idx, marker_y, color=color, marker="^" if t.get("side") == "ask" else "v", zorder=6)
+                        is_sell = t.get("side") == "ask"
+                        color = "#10b981" if is_sell else "#f59e0b"
+                        marker = "^" if is_sell else "v"
+                        self.ax.scatter(idx, marker_y, color=color, marker=marker, zorder=6)
+                        has_sell_trade = has_sell_trade or is_sell
+                        has_buy_trade = has_buy_trade or not is_sell
+
+                if has_buy_trade:
+                    legend_handles.append(
+                        Line2D([], [], color="#f59e0b", marker="v", linestyle="None", label="매수 체결")
+                    )
+                if has_sell_trade:
+                    legend_handles.append(
+                        Line2D([], [], color="#10b981", marker="^", linestyle="None", label="매도 체결")
+                    )
+
         self.ax.set_xlabel("Ticks")
         self.ax.set_ylabel("Price")
-        self.ax.legend(loc="upper left")
+        if legend_handles:
+            self.ax.legend(handles=legend_handles, loc="upper left")
         self.ax.grid(True, alpha=0.15)
         self.canvas.draw_idle()
 
