@@ -1013,8 +1013,11 @@ class DesktopDashboard(QMainWindow):
                 self.timeline_seen.add(key)
                 text = f"RISK {r.get('market')}: {r.get('reason')}"
                 self._add_timeline_event(text, severity="error")
-        except Exception:
-            return
+        except Exception as exc:  # pragma: no cover - UI resilience
+            self._add_timeline_event(f"상태 스토어 읽기 오류: {exc}", severity="warn")
+        finally:
+            # 주기 호출에서 예외 후에도 타이머 루프가 멈추지 않도록 보장
+            pass
 
     def _update_status_badges(self, snapshot) -> None:
         bot = self.runner.bot
