@@ -56,8 +56,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
 
 from upbit_bot.app import DecisionUpdate, TradingBot
 from upbit_bot.data.market_fetcher import fetch_markets
@@ -78,6 +79,17 @@ _SUPERTREND_STYLES: Dict[str, Dict[str, Any]] = {
     "medium": {"color": "#3b82f6", "linestyle": "-.", "alpha": 0.9},
     "strong": {"color": "#ef4444", "linestyle": "-", "linewidth": 1.4},
 }
+
+
+def _format_price_ticks(value: float) -> str:
+    abs_value = abs(value)
+    if abs_value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if abs_value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    if abs_value >= 1:
+        return f"{value:.0f}"
+    return f"{value:.2f}"
 
 
 class UpdateAdapter(QObject):
@@ -868,6 +880,14 @@ class DesktopDashboard(QMainWindow):
                     legend_handles.append(
                         Line2D([], [], color="#10b981", marker="^", linestyle="None", label="매도 체결")
                     )
+
+                max_high = float(highs.max())
+                min_low = float(lows.min())
+                pad = max((max_high - min_low) * 0.08, 1)
+                self.ax.set_ylim(min_low - pad, max_high + pad)
+                self.ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: _format_price_ticks(val)))
+                self.ax.margins(y=0.05)
+                self.ax.tick_params(labelsize=9)
 
         self.ax.set_xlabel("Ticks")
         self.ax.set_ylabel("Price")
