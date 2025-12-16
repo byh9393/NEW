@@ -852,12 +852,13 @@ class DesktopDashboard(QMainWindow):
                     series = st_df["supertrend"].iloc[-len(closes) :]
                     if series.empty:
                         continue
-                    styles = _SUPERTREND_STYLES.get(name, {})
+                    styles = dict(_SUPERTREND_STYLES.get(name, {}))
+                    linewidth = styles.pop("linewidth", 1.2)
                     st_line = self.ax.plot(
                         x[-len(series) :],
                         series,
                         label=f"Supertrend {name}",
-                        linewidth=1.2,
+                        linewidth=linewidth,
                         **styles,
                     )[0]
                     supertrend_handles.append(st_line)
@@ -1172,7 +1173,7 @@ class DesktopDashboard(QMainWindow):
             }}
             QLineEdit:focus, QComboBox:focus {{
                 border: 1px solid {accent};
-                box-shadow: 0 0 0 2px {accent}33;
+                /* Qt 스타일시트에서는 box-shadow를 지원하지 않으므로 경고를 피하기 위해 제거 */
             }}
             QTableView {{
                 background: {card};
