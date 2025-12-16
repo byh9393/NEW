@@ -870,7 +870,32 @@ class DesktopDashboard(QMainWindow):
     def _refresh_chart(self) -> None:
         market = self.chart_selector.currentText()
         self.ax.clear()
-        self.ax.set_title(market or "Select Market")
+        palette = self._theme_palette()
+        chart_palette = palette.get(
+            "chart",
+            {
+                "bg": palette.get("card", "white"),
+                "grid": palette.get("border", "#e2e8f0"),
+                "spine": palette.get("border", "#e2e8f0"),
+                "text": palette.get("text", "#0f172a"),
+                "legend_face": palette.get("card", "white"),
+                "legend_edge": palette.get("border", "#e2e8f0"),
+                "bull": "#22c55e",
+                "bear": "#ef4444",
+                "ema_fast": palette.get("accent_alt", "#22c55e"),
+                "ema_slow": "#a855f7",
+                "ema_long": "#f97316",
+                "fill": palette.get("accent", "#2563eb"),
+                "trade_buy": "#f59e0b",
+                "trade_sell": "#10b981",
+                "heatmap_cmap": "magma",
+                "equity_line": "#22c55e",
+                "supertrend": {},
+            },
+        )
+        self.ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
+        self.ax.set_facecolor(chart_palette.get("bg"))
+        self.ax.set_title(market or "Select Market", color=chart_palette.get("text"))
         legend_handles: List[Line2D] = []
         if market:
             frame = self.runner.bot.ohlcv_service.get_frame(market, "5m") if self.runner.bot else None
@@ -882,14 +907,14 @@ class DesktopDashboard(QMainWindow):
                 opens = frame["open"].tail(lookback)
                 x = np.arange(len(closes))
                 for i, (o, h, l, c) in enumerate(zip(opens, highs, lows, closes)):
-                    color = "#22c55e" if c >= o else "#ef4444"
-                    self.ax.vlines(i, l, h, color=color, alpha=0.6)
-                    self.ax.vlines(i, min(o, c), max(o, c), color=color, linewidth=6, alpha=0.8)
+                    color = chart_palette.get("bull") if c >= o else chart_palette.get("bear")
+                    self.ax.vlines(i, l, h, color=color, alpha=0.65)
+                    self.ax.vlines(i, min(o, c), max(o, c), color=color, linewidth=6, alpha=0.9)
 
                 legend_handles.extend(
                     [
-                        Line2D([], [], color="#22c55e", linewidth=4, label="상승 캔들"),
-                        Line2D([], [], color="#ef4444", linewidth=4, label="하락 캔들"),
+                        Line2D([], [], color=chart_palette.get("bull"), linewidth=4, label="상승 캔들"),
+                        Line2D([], [], color=chart_palette.get("bear"), linewidth=4, label="하락 캔들"),
                     ]
                 )
 
@@ -899,10 +924,10 @@ class DesktopDashboard(QMainWindow):
                     ema200_line = self.ax.plot(
                         x[-len(ema200_series) :],
                         ema200_series,
-                        color="#f97316",
+                        color=chart_palette.get("ema_long", "#f97316"),
                         label="EMA200",
                         linewidth=1.8,
-                        alpha=0.85,
+                        alpha=0.8,
                     )[0]
                     legend_handles.append(ema200_line)
 
@@ -910,10 +935,20 @@ class DesktopDashboard(QMainWindow):
                     ema9 = closes.ewm(span=9).mean()
                     ema21 = closes.ewm(span=21).mean()
                     ema9_line = self.ax.plot(
-                        x, ema9, color="#22d3ee", label="EMA9", linewidth=1.0, alpha=0.9
+                        x,
+                        ema9,
+                        color=chart_palette.get("ema_fast", "#22d3ee"),
+                        label="EMA9",
+                        linewidth=1.0,
+                        alpha=0.85,
                     )[0]
                     ema21_line = self.ax.plot(
-                        x, ema21, color="#a855f7", label="EMA21", linewidth=1.0, alpha=0.9
+                        x,
+                        ema21,
+                        color=chart_palette.get("ema_slow", "#a855f7"),
+                        label="EMA21",
+                        linewidth=1.0,
+                        alpha=0.85,
                     )[0]
                     legend_handles.extend([ema9_line, ema21_line])
 
@@ -926,6 +961,10 @@ class DesktopDashboard(QMainWindow):
                     if series.empty:
                         continue
                     styles = dict(_SUPERTREND_STYLES.get(name, {}))
+                    st_colors = chart_palette.get("supertrend", {})
+                    if name in st_colors:
+                        styles["color"] = st_colors[name]
+                    styles.setdefault("alpha", 0.85)
                     linewidth = styles.pop("linewidth", 1.2)
                     st_line = self.ax.plot(
                         x[-len(series) :],
@@ -937,7 +976,7 @@ class DesktopDashboard(QMainWindow):
                     supertrend_handles.append(st_line)
                 legend_handles.extend(supertrend_handles)
 
-                self.ax.fill_between(x, closes, color="#2563eb", alpha=0.05)
+                self.ax.fill_between(x, closes, color=chart_palette.get("fill"), alpha=0.08)
                 # trade markers
                 trades = (self.state_store_reader.load_recent_trades(limit=50) if self.state_store_reader else [])
                 has_buy_trade = False
@@ -947,19 +986,19 @@ class DesktopDashboard(QMainWindow):
                         idx = len(closes) - 1
                         marker_y = t.get("price", closes.iloc[-1])
                         is_sell = t.get("side") == "ask"
-                        color = "#10b981" if is_sell else "#f59e0b"
+                        color = chart_palette.get("trade_sell") if is_sell else chart_palette.get("trade_buy")
                         marker = "^" if is_sell else "v"
-                        self.ax.scatter(idx, marker_y, color=color, marker=marker, zorder=6)
+                        self.ax.scatter(idx, marker_y, color=color, marker=marker, zorder=6, alpha=0.9)
                         has_sell_trade = has_sell_trade or is_sell
                         has_buy_trade = has_buy_trade or not is_sell
 
                 if has_buy_trade:
                     legend_handles.append(
-                        Line2D([], [], color="#f59e0b", marker="v", linestyle="None", label="매수 체결")
+                        Line2D([], [], color=chart_palette.get("trade_buy"), marker="v", linestyle="None", label="매수 체결")
                     )
                 if has_sell_trade:
                     legend_handles.append(
-                        Line2D([], [], color="#10b981", marker="^", linestyle="None", label="매도 체결")
+                        Line2D([], [], color=chart_palette.get("trade_sell"), marker="^", linestyle="None", label="매도 체결")
                     )
 
                 max_high = float(highs.max())
@@ -970,17 +1009,27 @@ class DesktopDashboard(QMainWindow):
                 self.ax.margins(y=0.05)
                 self.ax.tick_params(labelsize=9)
 
-        self.ax.set_xlabel("Ticks")
-        self.ax.set_ylabel("Price")
+        for spine in self.ax.spines.values():
+            spine.set_color(chart_palette.get("spine"))
+        self.ax.set_xlabel("Ticks", color=chart_palette.get("text"))
+        self.ax.set_ylabel("Price", color=chart_palette.get("text"))
         if legend_handles:
-            self.ax.legend(handles=legend_handles, loc="upper left")
-        self.ax.grid(True, alpha=0.15)
+            legend = self.ax.legend(handles=legend_handles, loc="upper left")
+            legend.get_frame().set_facecolor(chart_palette.get("legend_face"))
+            legend.get_frame().set_edgecolor(chart_palette.get("legend_edge"))
+            for text in legend.get_texts():
+                text.set_color(chart_palette.get("text"))
+        self.ax.tick_params(labelsize=9, colors=chart_palette.get("text"))
+        self.ax.grid(True, color=chart_palette.get("grid"), alpha=0.25)
         self.canvas.draw_idle()
 
     def _refresh_heatmap(self) -> None:
         entries = self.heatmap_cache
         if not entries:
             return
+        palette = self._theme_palette()
+        chart_palette = palette.get("chart", {})
+        self.heatmap_ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
         markets = sorted(entries, key=lambda e: e.get("composite", 0), reverse=True)[:16]
         scores = [m.get("composite", 0) * 100 for m in markets]
         size = int(len(scores) ** 0.5) or 1
@@ -989,14 +1038,22 @@ class DesktopDashboard(QMainWindow):
         grid_scores = scores + [0.0] * (size * size - len(scores))
         matrix = [grid_scores[i : i + size] for i in range(0, len(grid_scores), size)]
         self.heatmap_ax.clear()
-        _ = self.heatmap_ax.imshow(matrix, cmap="coolwarm")
+        self.heatmap_ax.set_facecolor(chart_palette.get("bg", palette.get("card")))
+        _ = self.heatmap_ax.imshow(matrix, cmap=chart_palette.get("heatmap_cmap", "magma"))
         self.heatmap_ax.set_xticks([])
         self.heatmap_ax.set_yticks([])
-        self.heatmap_ax.set_title("Score Heatmap")
+        self.heatmap_ax.set_title("Score Heatmap", color=chart_palette.get("text", palette.get("text")))
         for idx, score in enumerate(scores):
             y, x = divmod(idx, size)
             label = f"{markets[idx].get('market','')}\n{score:.1f}"
-            self.heatmap_ax.text(x, y, label, ha="center", va="center", color="black")
+            self.heatmap_ax.text(
+                x,
+                y,
+                label,
+                ha="center",
+                va="center",
+                color=chart_palette.get("text", palette.get("text")),
+            )
         self.heatmap_canvas.draw_idle()
 
     def _refresh_heatmap_list(self, entries: List[Dict[str, float]]) -> None:
@@ -1008,11 +1065,23 @@ class DesktopDashboard(QMainWindow):
 
     def _refresh_equity_curve(self) -> None:
         self.equity_ax.clear()
+        palette = self._theme_palette()
+        chart_palette = palette.get("chart", {})
+        self.equity_ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
+        self.equity_ax.set_facecolor(chart_palette.get("bg", palette.get("card")))
         if self.equity_history:
-            self.equity_ax.plot(list(self.equity_history), color="tab:green")
-        self.equity_ax.set_xlabel("Update")
-        self.equity_ax.set_ylabel("Total Asset")
-        self.equity_ax.grid(True, alpha=0.2)
+            self.equity_ax.plot(
+                list(self.equity_history),
+                color=chart_palette.get("equity_line", palette.get("accent", "tab:green")),
+                alpha=0.9,
+                linewidth=1.6,
+            )
+        for spine in self.equity_ax.spines.values():
+            spine.set_color(chart_palette.get("spine"))
+        self.equity_ax.set_xlabel("Update", color=chart_palette.get("text", palette.get("text")))
+        self.equity_ax.set_ylabel("Total Asset", color=chart_palette.get("text", palette.get("text")))
+        self.equity_ax.tick_params(colors=chart_palette.get("text", palette.get("text")))
+        self.equity_ax.grid(True, color=chart_palette.get("grid", palette.get("border")), alpha=0.25)
         self.equity_canvas.draw_idle()
 
     def _poll_state_store(self) -> None:
@@ -1328,6 +1397,25 @@ class DesktopDashboard(QMainWindow):
                     "warn": {"bg": "#fff7e0", "text": "#92400e"},
                     "error": {"bg": "#fde8e8", "text": "#7f1d1d"},
                 },
+                "chart": {
+                    "bg": "#ffffff",
+                    "grid": "#e2e8f0",
+                    "spine": "#cbd5e1",
+                    "text": "#0f172a",
+                    "legend_face": "#ffffff",
+                    "legend_edge": "#e2e8f0",
+                    "bull": "#16a34a",
+                    "bear": "#ef4444",
+                    "ema_fast": "#0ea5e9",
+                    "ema_slow": "#a855f7",
+                    "ema_long": "#fb923c",
+                    "fill": "#2563eb",
+                    "trade_buy": "#d97706",
+                    "trade_sell": "#22c55e",
+                    "heatmap_cmap": "magma",
+                    "equity_line": "#16a34a",
+                    "supertrend": {"weak": "#d97706", "medium": "#2563eb", "strong": "#ef4444"},
+                },
             }
 
         return {
@@ -1353,6 +1441,25 @@ class DesktopDashboard(QMainWindow):
                 "info": {"bg": "#12324d", "text": "#cfe4ff"},
                 "warn": {"bg": "#4b3212", "text": "#ffe7a3"},
                 "error": {"bg": "#4c1d1d", "text": "#fecdd3"},
+            },
+            "chart": {
+                "bg": "#0f172a",
+                "grid": "#1f2937",
+                "spine": "#2c3a52",
+                "text": "#e2e8f0",
+                "legend_face": "#0f172a",
+                "legend_edge": "#2c3a52",
+                "bull": "#34d399",
+                "bear": "#fb7185",
+                "ema_fast": "#38bdf8",
+                "ema_slow": "#c084fc",
+                "ema_long": "#fb923c",
+                "fill": "#1d4ed8",
+                "trade_buy": "#fbbf24",
+                "trade_sell": "#2dd4bf",
+                "heatmap_cmap": "magma",
+                "equity_line": "#22d3ee",
+                "supertrend": {"weak": "#fbbf24", "medium": "#38bdf8", "strong": "#fb7185"},
             },
         }
 
