@@ -893,9 +893,11 @@ class DesktopDashboard(QMainWindow):
                 "supertrend": {},
             },
         )
-        self.ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
+        bg_color = chart_palette.get("bg", palette.get("card"))
+        self.ax.figure.set_facecolor(bg_color)
+        self.ax.figure.patch.set_facecolor(bg_color)
         self.ax.set_facecolor(chart_palette.get("bg"))
-        self.canvas.setStyleSheet(f"background-color: {chart_palette.get('bg', palette.get('card'))};")
+        self.canvas.setStyleSheet(f"background-color: {bg_color};")
         self.ax.set_title(market or "Select Market", color=chart_palette.get("text"))
         legend_handles: List[Line2D] = []
         if market:
@@ -1030,8 +1032,10 @@ class DesktopDashboard(QMainWindow):
             return
         palette = self._theme_palette()
         chart_palette = palette.get("chart", {})
-        self.heatmap_ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
-        self.heatmap_canvas.setStyleSheet(f"background-color: {chart_palette.get('bg', palette.get('card'))};")
+        bg_color = chart_palette.get("bg", palette.get("card"))
+        self.heatmap_ax.figure.set_facecolor(bg_color)
+        self.heatmap_ax.figure.patch.set_facecolor(bg_color)
+        self.heatmap_canvas.setStyleSheet(f"background-color: {bg_color};")
         markets = sorted(entries, key=lambda e: e.get("composite", 0), reverse=True)[:16]
         scores = [m.get("composite", 0) * 100 for m in markets]
         size = int(len(scores) ** 0.5) or 1
@@ -1040,11 +1044,12 @@ class DesktopDashboard(QMainWindow):
         grid_scores = scores + [0.0] * (size * size - len(scores))
         matrix = [grid_scores[i : i + size] for i in range(0, len(grid_scores), size)]
         self.heatmap_ax.clear()
-        self.heatmap_ax.set_facecolor(chart_palette.get("bg", palette.get("card")))
+        self.heatmap_ax.set_facecolor(bg_color)
         _ = self.heatmap_ax.imshow(matrix, cmap=chart_palette.get("heatmap_cmap", "magma"))
         self.heatmap_ax.set_xticks([])
         self.heatmap_ax.set_yticks([])
         self.heatmap_ax.set_title("Score Heatmap", color=chart_palette.get("text", palette.get("text")))
+        text_color = chart_palette.get("heatmap_text", chart_palette.get("text", palette.get("text")))
         for idx, score in enumerate(scores):
             y, x = divmod(idx, size)
             label = f"{markets[idx].get('market','')}\n{score:.1f}"
@@ -1054,7 +1059,8 @@ class DesktopDashboard(QMainWindow):
                 label,
                 ha="center",
                 va="center",
-                color=chart_palette.get("heatmap_text", chart_palette.get("text", palette.get("text"))),
+                color=text_color,
+                fontweight="bold",
             )
         self.heatmap_canvas.draw_idle()
 
