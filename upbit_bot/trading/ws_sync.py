@@ -44,16 +44,24 @@ class UpbitWebSocketSync:
             {"ticket": "public"},
             {"type": "ticker", "codes": self.markets, "isOnlyRealtime": True},
         ]
-        async with websockets.connect(UPBIT_WS_ENDPOINT, ping_interval=60) as ws:
-            await ws.send(json.dumps(payload))
-            async for msg in ws:
-                data = json.loads(msg)
-                code = data.get("code")
-                price = data.get("trade_price")
-                if code and price:
-                    self.price_buffer.append(code, float(price))
-                if stop_event.is_set():
-                    break
+        backoff = 1
+        while not stop_event.is_set():
+            try:
+                async with websockets.connect(UPBIT_WS_ENDPOINT, ping_interval=60) as ws:
+                    await ws.send(json.dumps(payload))
+                    async for msg in ws:
+                        data = json.loads(msg)
+                        code = data.get("code")
+                        price = data.get("trade_price")
+                        if code and price:
+                            self.price_buffer.append(code, float(price))
+                        if stop_event.is_set():
+                            break
+                backoff = 1
+            except Exception:
+                logger.exception("공개 웹소켓 스트림 오류, 재연결합니다")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
 
     async def _stream_private(self, stop_event: asyncio.Event) -> None:
         if not self.access_key or not self.secret_key:
@@ -65,42 +73,50 @@ class UpbitWebSocketSync:
             {"type": "myOrder", "codes": self.markets},
             {"format": "SIMPLE"},
         ]
-        async with websockets.connect(UPBIT_WS_ENDPOINT, ping_interval=60, extra_headers=headers) as ws:
-            await ws.send(json.dumps(payload))
-            async for msg in ws:
-                try:
-                    data = json.loads(msg)
-                except Exception:
-                    data = None
-
-                # parse minimal order deltas
-                if isinstance(data, dict):
-                    event = data.get("event") or data.get("state")
-                    if event in ("order", "trade", "done", "watch"):
-                        logger.info("myOrder event: %s %s %s", event, data.get("side"), data.get("code"))
+        backoff = 1
+        while not stop_event.is_set():
+            try:
+                async with websockets.connect(UPBIT_WS_ENDPOINT, ping_interval=60, extra_headers=headers) as ws:
+                    await ws.send(json.dumps(payload))
+                    async for msg in ws:
                         try:
-                            self.state_store.record_myorder_event(data)
+                            data = json.loads(msg)
                         except Exception:
-                            logger.exception("record_myorder_event failed")
+                            data = None
 
-                snapshot = fetch_account_snapshot(
-                    access_key=self.access_key,
-                    secret_key=self.secret_key,
-                    price_lookup=self.price_buffer.latest,
-                )
-                if snapshot:
-                    snapshot.total_fee = snapshot.total_fee or 0.0
-                    if self.on_account:
-                        try:
-                            self.on_account(snapshot)
-                        except Exception:
-                            logger.exception("on_account callback failed")
-                    try:
-                        self.state_store.persist_snapshot(snapshot)
-                    except Exception:
-                        logger.exception("persist_snapshot failed")
-                if stop_event.is_set():
-                    break
+                        # parse minimal order deltas
+                        if isinstance(data, dict):
+                            event = data.get("event") or data.get("state")
+                            if event in ("order", "trade", "done", "watch"):
+                                logger.info("myOrder event: %s %s %s", event, data.get("side"), data.get("code"))
+                                try:
+                                    self.state_store.record_myorder_event(data)
+                                except Exception:
+                                    logger.exception("record_myorder_event failed")
+
+                        snapshot = fetch_account_snapshot(
+                            access_key=self.access_key,
+                            secret_key=self.secret_key,
+                            price_lookup=self.price_buffer.latest,
+                        )
+                        if snapshot:
+                            snapshot.total_fee = snapshot.total_fee or 0.0
+                            if self.on_account:
+                                try:
+                                    self.on_account(snapshot)
+                                except Exception:
+                                    logger.exception("on_account callback failed")
+                            try:
+                                self.state_store.persist_snapshot(snapshot)
+                            except Exception:
+                                logger.exception("persist_snapshot failed")
+                        if stop_event.is_set():
+                            break
+                backoff = 1
+            except Exception:
+                logger.exception("개인 웹소켓 스트림 오류, 재연결합니다")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
 
     async def run(self, stop_event: asyncio.Event) -> None:
         tasks = [asyncio.create_task(self._stream_public(stop_event))]

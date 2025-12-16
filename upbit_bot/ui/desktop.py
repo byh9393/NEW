@@ -64,6 +64,7 @@ from matplotlib.ticker import FuncFormatter
 
 from upbit_bot.app import DecisionUpdate, TradingBot
 from upbit_bot.data.market_fetcher import fetch_markets
+from upbit_bot.data.upbit_adapter import UpbitAdapter
 from upbit_bot.indicators import technical
 from upbit_bot.storage import SQLiteStateStore
 
@@ -334,6 +335,8 @@ class DesktopDashboard(QMainWindow):
         self._poll_timer.timeout.connect(self._poll_state_store)
         self._poll_timer.start(2000)
         self._market_fetch_thread: Optional[threading.Thread] = None
+        self._market_fetch_token = 0
+        self._market_timeout_timer: Optional[QTimer] = None
 
         self._init_ui()
         self._apply_dark_theme()
@@ -695,6 +698,10 @@ class DesktopDashboard(QMainWindow):
 
     # 이벤트 처리
     def start_trading(self) -> None:
+        if self._market_fetch_thread and self._market_fetch_thread.is_alive():
+            self._show_banner("이미 마켓 조회 중입니다. 잠시만 기다려주세요.", success=False, severity="warn")
+            return
+
         text = self.market_input.text().strip()
         if text:
             markets = [m.strip().upper() for m in text.split(",") if m.strip()]
@@ -704,16 +711,38 @@ class DesktopDashboard(QMainWindow):
         self.start_btn.setEnabled(False)
         self.status_label.setText("마켓 조회 중...")
 
+        self._market_fetch_token += 1
+        token = self._market_fetch_token
+
+        if self._market_timeout_timer:
+            self._market_timeout_timer.stop()
+        self._market_timeout_timer = QTimer(self)
+        self._market_timeout_timer.setSingleShot(True)
+        self._market_timeout_timer.timeout.connect(lambda: self._on_market_fetch_timeout(token))
+        self._market_timeout_timer.start(12000)
+
         def _fetch_markets() -> None:
             try:
-                markets_result = fetch_markets(is_fiat=True, fiat_symbol="KRW", top_by_volume=5)
+                markets_result = fetch_markets(
+                    is_fiat=True,
+                    fiat_symbol="KRW",
+                    top_by_volume=5,
+                    adapter=UpbitAdapter(timeout=4, max_retries=1, backoff=0.3),
+                )
             except Exception as exc:  # pragma: no cover - 네트워크 예외 방어
-                QTimer.singleShot(0, lambda: self._handle_market_fetch_failure(exc))
+                QTimer.singleShot(0, lambda: self._handle_market_fetch_failure(exc, token))
                 return
-            QTimer.singleShot(0, lambda: self._start_with_markets(markets_result))
+            QTimer.singleShot(0, lambda: self._finish_market_fetch(markets_result, token))
 
         self._market_fetch_thread = threading.Thread(target=_fetch_markets, daemon=True)
         self._market_fetch_thread.start()
+
+    def _finish_market_fetch(self, markets: List[str], token: int) -> None:
+        if token != self._market_fetch_token:
+            return
+        self._clear_market_fetch_timer()
+        self._market_fetch_thread = None
+        self._start_with_markets(markets)
 
     def _start_with_markets(self, markets: List[str]) -> None:
         if not markets:
@@ -730,7 +759,22 @@ class DesktopDashboard(QMainWindow):
         self.status_label.setText(f"실행 중 | 모니터링 {len(markets)}개")
         self._add_timeline_event("거래 시작", severity="success")
 
-    def _handle_market_fetch_failure(self, exc: Exception) -> None:
+    def _on_market_fetch_timeout(self, token: int) -> None:
+        if token != self._market_fetch_token:
+            return
+        self._market_fetch_thread = None
+        self._handle_market_fetch_failure(TimeoutError("마켓 조회가 제한 시간 내 완료되지 않았습니다."), token)
+
+    def _clear_market_fetch_timer(self) -> None:
+        if self._market_timeout_timer:
+            self._market_timeout_timer.stop()
+            self._market_timeout_timer = None
+
+    def _handle_market_fetch_failure(self, exc: Exception, token: Optional[int] = None) -> None:
+        if token is not None and token != self._market_fetch_token:
+            return
+        self._clear_market_fetch_timer()
+        self._market_fetch_thread = None
         self._show_banner(f"마켓 조회 실패: {exc}", success=False, severity="error")
         self.start_btn.setEnabled(True)
         self.status_label.setText("대기 중")
