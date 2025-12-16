@@ -56,6 +56,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 import matplotlib
+from matplotlib import cm
+from matplotlib import colors as mcolors
 from matplotlib import font_manager
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.lines import Line2D
@@ -565,9 +567,13 @@ class DesktopDashboard(QMainWindow):
 
         heatmap_box = self._create_card_frame("코인별 스코어 Heatmap")
         heatmap_layout = QVBoxLayout(heatmap_box)
+        chart_palette = self._theme_palette().get("chart", {})
+        heatmap_bg = chart_palette.get("bg", self._theme_palette().get("card"))
         heatmap_fig = Figure(figsize=(4, 3), dpi=100)
-        self.heatmap_ax = heatmap_fig.add_subplot(111)
+        heatmap_fig.patch.set_facecolor(heatmap_bg)
+        self.heatmap_ax = heatmap_fig.add_subplot(111, facecolor=heatmap_bg)
         self.heatmap_canvas = FigureCanvasQTAgg(heatmap_fig)
+        self.heatmap_canvas.setStyleSheet(f"background-color: {heatmap_bg};")
         heatmap_layout.addWidget(self.heatmap_canvas)
 
         chart_box = self._create_card_frame("캔들 + 지표 + 매수/매도 마커")
@@ -584,8 +590,12 @@ class DesktopDashboard(QMainWindow):
         chart_layout.addLayout(top)
 
         fig = Figure(figsize=(6, 3), dpi=100)
-        self.ax = fig.add_subplot(111)
+        chart_palette = self._theme_palette().get("chart", {})
+        chart_bg = chart_palette.get("bg", self._theme_palette().get("card"))
+        fig.patch.set_facecolor(chart_bg)
+        self.ax = fig.add_subplot(111, facecolor=chart_bg)
         self.canvas = FigureCanvasQTAgg(fig)
+        self.canvas.setStyleSheet(f"background-color: {chart_bg};")
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         chart_layout.addWidget(self.canvas)
 
@@ -1042,14 +1052,27 @@ class DesktopDashboard(QMainWindow):
         while size * size < len(scores):
             size += 1
         grid_scores = scores + [0.0] * (size * size - len(scores))
-        matrix = [grid_scores[i : i + size] for i in range(0, len(grid_scores), size)]
+        matrix = np.array(grid_scores, dtype=float).reshape(size, size)
         self.heatmap_ax.clear()
         self.heatmap_ax.set_facecolor(bg_color)
-        _ = self.heatmap_ax.imshow(matrix, cmap=chart_palette.get("heatmap_cmap", "magma"))
+        cmap_name = chart_palette.get("heatmap_cmap", "magma")
+        cmap = cm.get_cmap(cmap_name)
+        vmin, vmax = float(matrix.min()), float(matrix.max())
+        if vmax == vmin:
+            vmax = vmin + 1e-6
+        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+        _ = self.heatmap_ax.imshow(matrix, cmap=cmap, norm=norm)
         self.heatmap_ax.set_xticks([])
         self.heatmap_ax.set_yticks([])
         self.heatmap_ax.set_title("Score Heatmap", color=chart_palette.get("text", palette.get("text")))
-        text_color = chart_palette.get("heatmap_text", chart_palette.get("text", palette.get("text")))
+
+        def _contrast_color(score_value: float) -> str:
+            rgba = cmap(norm(score_value))
+            luminance = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
+            if luminance > 0.6:
+                return "#0f172a"
+            return "#f8fafc"
+
         for idx, score in enumerate(scores):
             y, x = divmod(idx, size)
             label = f"{markets[idx].get('market','')}\n{score:.1f}"
@@ -1059,7 +1082,7 @@ class DesktopDashboard(QMainWindow):
                 label,
                 ha="center",
                 va="center",
-                color=text_color,
+                color=_contrast_color(score),
                 fontweight="bold",
             )
         self.heatmap_canvas.draw_idle()
