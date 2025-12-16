@@ -895,6 +895,7 @@ class DesktopDashboard(QMainWindow):
         )
         self.ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
         self.ax.set_facecolor(chart_palette.get("bg"))
+        self.canvas.setStyleSheet(f"background-color: {chart_palette.get('bg', palette.get('card'))};")
         self.ax.set_title(market or "Select Market", color=chart_palette.get("text"))
         legend_handles: List[Line2D] = []
         if market:
@@ -1030,6 +1031,7 @@ class DesktopDashboard(QMainWindow):
         palette = self._theme_palette()
         chart_palette = palette.get("chart", {})
         self.heatmap_ax.figure.set_facecolor(chart_palette.get("bg", palette.get("card")))
+        self.heatmap_canvas.setStyleSheet(f"background-color: {chart_palette.get('bg', palette.get('card'))};")
         markets = sorted(entries, key=lambda e: e.get("composite", 0), reverse=True)[:16]
         scores = [m.get("composite", 0) * 100 for m in markets]
         size = int(len(scores) ** 0.5) or 1
@@ -1052,7 +1054,7 @@ class DesktopDashboard(QMainWindow):
                 label,
                 ha="center",
                 va="center",
-                color=chart_palette.get("text", palette.get("text")),
+                color=chart_palette.get("heatmap_text", chart_palette.get("text", palette.get("text"))),
             )
         self.heatmap_canvas.draw_idle()
 
@@ -1413,6 +1415,7 @@ class DesktopDashboard(QMainWindow):
                     "trade_buy": "#d97706",
                     "trade_sell": "#22c55e",
                     "heatmap_cmap": "magma",
+                    "heatmap_text": "#0f172a",
                     "equity_line": "#16a34a",
                     "supertrend": {"weak": "#d97706", "medium": "#2563eb", "strong": "#ef4444"},
                 },
@@ -1458,6 +1461,7 @@ class DesktopDashboard(QMainWindow):
                 "trade_buy": "#fbbf24",
                 "trade_sell": "#2dd4bf",
                 "heatmap_cmap": "magma",
+                "heatmap_text": "#e2e8f0",
                 "equity_line": "#22d3ee",
                 "supertrend": {"weak": "#fbbf24", "medium": "#38bdf8", "strong": "#fb7185"},
             },
