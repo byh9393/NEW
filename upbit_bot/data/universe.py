@@ -1,23 +1,23 @@
 """
-유니버스 동적 관리 모듈.
-
 - 30일 평균 일 거래대금 기준 필터링
 - 24시간 거래대금 상위 N개 시장 제한
 - 호가 스프레드가 과도한 종목 제외
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Iterable
 
 import pandas as pd
-import requests
+import websockets
 
 logger = logging.getLogger(__name__)
 
-ORDERBOOK_URL = "https://api.upbit.com/v1/orderbook"
+WS_ENDPOINT = "wss://api.upbit.com/websocket/v1"
 
 
 @dataclass
@@ -38,27 +38,44 @@ def fetch_spreads(markets: List[str]) -> Dict[str, float]:
     """주문호가 상단 스프레드를 가져와 종목별 상대 스프레드(%)를 계산한다."""
 
     spreads: Dict[str, float] = {}
+
+    async def _collect_batch(batch: List[str]) -> None:
+        payload = [
+            {"ticket": "orderbook"},
+            {"type": "orderbook", "codes": batch, "isOnlyRealtime": True},
+        ]
+        try:
+            async with websockets.connect(WS_ENDPOINT, ping_interval=30) as ws:
+                await ws.send(json.dumps(payload))
+                expected = len(batch)
+                while expected > 0:
+                    try:
+                        message = await asyncio.wait_for(ws.recv(), timeout=3)
+                    except asyncio.TimeoutError:
+                        break
+                    data = json.loads(message)
+                    code = data.get("code")
+                    units = data.get("orderbook_units") or []
+                    if not code or not units:
+                        continue
+                    top = units[0]
+                    bid = float(top.get("bid_price", 0.0) or 0.0)
+                    ask = float(top.get("ask_price", 0.0) or 0.0)
+                    mid = (bid + ask) / 2 if (bid and ask) else 0.0
+                    if bid <= 0 or ask <= 0 or mid <= 0:
+                        continue
+                    spreads[code] = (ask - bid) / mid
+                    expected -= 1
+        except Exception:
+            logger.exception("웹소켓 호가 수집 실패")
+
     for batch in _chunked(markets, 30):
         try:
-            resp = requests.get(ORDERBOOK_URL, params={"markets": ",".join(batch)}, timeout=10)
-            resp.raise_for_status()
-        except Exception:
-            logger.exception("호가 스프레드 조회 실패")
+            asyncio.run(_collect_batch(batch))
+        except RuntimeError:
+            logger.warning("실행 중인 이벤트 루프에서 호가 수집을 건너뜁니다.")
             continue
 
-        for ob in resp.json():
-            code = ob.get("code")
-            units = ob.get("orderbook_units") or []
-            if not code or not units:
-                continue
-            top = units[0]
-            bid = float(top.get("bid_price", 0.0) or 0.0)
-            ask = float(top.get("ask_price", 0.0) or 0.0)
-            mid = (bid + ask) / 2 if (bid and ask) else 0.0
-            if bid <= 0 or ask <= 0 or mid <= 0:
-                continue
-            spread = (ask - bid) / mid
-            spreads[code] = spread
     return spreads
 
 

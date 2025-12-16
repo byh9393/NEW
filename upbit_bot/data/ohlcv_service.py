@@ -1,10 +1,10 @@
 """
-REST 캔들 폴링과 웹소켓 틱 스트림을 결합해 다중 타임프레임 캔들을 관리한다.
+순수 웹소켓 틱 스트림으로 다중 타임프레임 캔들을 관리한다.
 
 - 1m/3m/5m/15m/1h/4h/1d 캔들을 rolling 윈도우로 유지
 - 누락된 캔들 간격, 급등락(spike) 감지 및 로깅
 - 로컬 캐시(JSON)를 이용해 재시작 시 마지막 타임스탬프 이후 백필 수행
-- 웹소켓 재연결/백오프 및 구독 재시도, 중단 시 REST 백필
+- 웹소켓 재연결/백오프 및 구독 재시도
 """
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ import pandas as pd
 import websockets
 
 from upbit_bot.data.stream import PriceBuffer
-from upbit_bot.data.upbit_adapter import UpbitAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +70,7 @@ class Candle:
 
 
 class OhlcvService:
-    """웹소켓 틱과 REST 캔들 백필을 결합한 OHLCV 관리 서비스."""
+    """웹소켓 틱만으로 캔들을 관리하는 서비스."""
 
     def __init__(
         self,
@@ -81,7 +80,6 @@ class OhlcvService:
         timeframes: Iterable[str] = ("1m", "3m", "5m", "15m", "1h", "4h", "1d"),
         window: int = 800,
         cache_dir: str | Path = "./.cache/ohlcv",
-        adapter: Optional[UpbitAdapter] = None,
     ) -> None:
         self.markets = list(markets)
         self.price_buffer = price_buffer or PriceBuffer(maxlen=1000)
@@ -93,23 +91,19 @@ class OhlcvService:
             lambda: {tf: deque(maxlen=self.window) for tf in self.timeframes}
         )
         self._stop_event = asyncio.Event()
-        self.adapter = adapter or UpbitAdapter()
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         """웹소켓/REST 백그라운드 태스크를 실행한다."""
 
         self._stop_event = stop_event
         await self._load_cache()
-        await self._initial_sync()
 
         ws_task = asyncio.create_task(self._websocket_loop())
-        rest_task = asyncio.create_task(self._rest_poll_loop())
 
         await stop_event.wait()
         ws_task.cancel()
-        rest_task.cancel()
         try:
-            await asyncio.gather(ws_task, rest_task)
+            await asyncio.gather(ws_task)
         except Exception:
             logger.debug("종료 중 태스크 취소", exc_info=True)
 
@@ -167,40 +161,8 @@ class OhlcvService:
                             break
             except Exception:
                 logger.exception("웹소켓 스트림 오류, 재시도합니다")
-                await self._backfill_all()
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
-
-    async def _rest_poll_loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                await self._sync_all_from_rest()
-            except Exception:
-                logger.exception("REST 폴링 중 오류")
-            await asyncio.sleep(30)
-
-    async def _initial_sync(self) -> None:
-        try:
-            await self._sync_all_from_rest(full_window=True)
-        except Exception:
-            logger.exception("초기 REST 동기화 실패")
-
-    async def _sync_all_from_rest(self, *, full_window: bool = False) -> None:
-        for market in self.markets:
-            for timeframe in self.timeframes:
-                await asyncio.to_thread(self._sync_market_timeframe, market, timeframe, full_window)
-
-    def _sync_market_timeframe(self, market: str, timeframe: str, full_window: bool = False) -> None:
-        candles = self._fetch_rest_candles(market, timeframe, count=self.window if full_window else 50)
-        if not candles:
-            return
-        existing = self._candles[market][timeframe]
-        latest_existing = existing[-1].start if existing else None
-        for candle in candles:
-            if latest_existing and candle.start <= latest_existing:
-                # 이미 존재하는 최신 구간 이후만 추가
-                continue
-            self._append_candle(market, timeframe, candle)
 
     def _update_with_tick(self, market: str, price: float, volume: float, ts: datetime) -> None:
         for timeframe in self.timeframes:
@@ -256,32 +218,6 @@ class OhlcvService:
                 change * 100,
             )
 
-    def _fetch_rest_candles(self, market: str, timeframe: str, *, count: int = 200) -> List[Candle]:
-        kind, unit, _ = _TIMEFRAME_MAP[timeframe]
-        raw: List[dict] = self.adapter.candles(
-            market=market,
-            kind=kind,
-            unit=unit,
-            count=min(count, 200),
-        )
-        candles: List[Candle] = []
-        for item in raw:
-            start_str = item.get("candle_date_time_utc") or item.get("candle_date_time_kst")
-            if not start_str:
-                continue
-            start = datetime.fromisoformat(start_str)
-            candle = Candle(
-                start=start,
-                open=float(item.get("opening_price", 0.0)),
-                high=float(item.get("high_price", 0.0)),
-                low=float(item.get("low_price", 0.0)),
-                close=float(item.get("trade_price", 0.0)),
-                volume=float(item.get("candle_acc_trade_volume", 0.0)),
-            )
-            candles.append(candle)
-        candles.sort(key=lambda c: c.start)
-        return candles
-
     def _bucket_start(self, ts: datetime, timeframe: str) -> datetime:
         _, unit, _ = _TIMEFRAME_MAP[timeframe]
         if timeframe.endswith("d"):
@@ -321,20 +257,4 @@ class OhlcvService:
             for raw in candles:
                 dq.append(Candle.from_dict(raw))
             self._candles[market][timeframe] = dq
-
-    async def _backfill_all(self) -> None:
-        for market in self.markets:
-            for timeframe in self.timeframes:
-                await asyncio.to_thread(self._backfill_market_timeframe, market, timeframe)
-
-    def _backfill_market_timeframe(self, market: str, timeframe: str) -> None:
-        existing = self._candles[market][timeframe]
-        latest = existing[-1].start if existing else None
-        candles = self._fetch_rest_candles(market, timeframe, count=200)
-        if not candles:
-            return
-        if latest:
-            candles = [c for c in candles if c.start > latest]
-        for candle in candles:
-            self._append_candle(market, timeframe, candle)
 
