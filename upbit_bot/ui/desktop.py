@@ -97,6 +97,24 @@ def _format_price_ticks(value: float) -> str:
     return f"{value:.2f}"
 
 
+def _apply_axes_style(ax, chart_palette: Dict[str, str], *, labelsize: int = 9) -> None:
+    """차트 축/눈금/그리드를 테마 색상에 맞춰 일괄 적용."""
+
+    axis_color = chart_palette.get("axis", chart_palette.get("text", "#0f172a"))
+    spine_color = chart_palette.get("spine", axis_color)
+    grid_color = chart_palette.get("grid", spine_color)
+
+    for spine in ax.spines.values():
+        spine.set_color(spine_color)
+        spine.set_linewidth(0.8)
+
+    ax.tick_params(axis="both", colors=axis_color, labelsize=labelsize)
+    ax.grid(True, color=grid_color, alpha=0.35)
+    ax.xaxis.label.set_color(chart_palette.get("text", axis_color))
+    ax.yaxis.label.set_color(chart_palette.get("text", axis_color))
+    ax.title.set_color(chart_palette.get("text", axis_color))
+
+
 class UpdateAdapter(QObject):
     """TradingBot의 ``on_update``를 받아 Qt 시그널로 전달."""
 
@@ -1022,18 +1040,15 @@ class DesktopDashboard(QMainWindow):
                 self.ax.margins(y=0.05)
                 self.ax.tick_params(labelsize=9)
 
-        for spine in self.ax.spines.values():
-            spine.set_color(chart_palette.get("spine"))
-        self.ax.set_xlabel("Ticks", color=chart_palette.get("text"))
-        self.ax.set_ylabel("Price", color=chart_palette.get("text"))
+        self.ax.set_xlabel("Ticks")
+        self.ax.set_ylabel("Price")
         if legend_handles:
             legend = self.ax.legend(handles=legend_handles, loc="upper left")
             legend.get_frame().set_facecolor(chart_palette.get("legend_face"))
             legend.get_frame().set_edgecolor(chart_palette.get("legend_edge"))
             for text in legend.get_texts():
                 text.set_color(chart_palette.get("text"))
-        self.ax.tick_params(labelsize=9, colors=chart_palette.get("text"))
-        self.ax.grid(True, color=chart_palette.get("grid"), alpha=0.25)
+        _apply_axes_style(self.ax, chart_palette, labelsize=9)
         self.canvas.draw_idle()
 
     def _refresh_heatmap(self) -> None:
@@ -1480,8 +1495,9 @@ class DesktopDashboard(QMainWindow):
             },
             "chart": {
                 "bg": "#0f172a",
-                "grid": "#1f2937",
-                "spine": "#2c3a52",
+                "grid": "#334155",
+                "spine": "#475569",
+                "axis": "#e2e8f0",
                 "text": "#e2e8f0",
                 "legend_face": "#0f172a",
                 "legend_edge": "#2c3a52",
