@@ -69,3 +69,14 @@ def test_fetch_markets_uses_adapter_and_filters(monkeypatch):
     markets = fetch_markets(is_fiat=True, fiat_symbol="KRW", top_by_volume=1, adapter=dummy)
     assert markets == ["KRW-BTC"]
     assert dummy.calls == ["list", "ticker"]
+
+
+def test_fetch_markets_limits_even_when_volume_fails():
+    class FaultyAdapter(DummyAdapter):
+        def ticker(self, markets):  # noqa: D401
+            raise RuntimeError("boom")
+
+    dummy = FaultyAdapter()
+    markets = fetch_markets(is_fiat=True, fiat_symbol="KRW", top_by_volume=2, adapter=dummy)
+    # 거래대금 조회가 실패해도 상위 N개 제한 로직은 유지되어야 한다.
+    assert markets == ["KRW-BTC", "KRW-ETH"]
