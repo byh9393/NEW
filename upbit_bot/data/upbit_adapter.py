@@ -60,47 +60,112 @@ class UpbitAdapter:
         if rl.sec_remaining <= 1:
             time.sleep(self.backoff)
 
-    def request(self, method: str, path: str, *, params: Optional[dict] = None) -> Any:
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict] = None,
+        deadline: float | None = None,
+    ) -> Any:
+        """Rate-limit과 일시적 장애에 대응하며 REST 호출을 수행한다.
+
+        ``deadline`` 이 주어지면 해당 시점 이전에 호출을 완료하거나 ``TimeoutError``로
+        빠르게 중단한다. 마켓 조회 시 UI 제한 시간을 넘겨 실패하는 문제를 방지하기
+        위함이다.
+        """
+
         url = f"{BASE_URL}{path}"
         last_exc: Optional[Exception] = None
-        for attempt in range(1, self.max_retries + 1):
+
+        for attempt in range(0, self.max_retries + 1):
+            if deadline and time.monotonic() >= deadline:
+                raise TimeoutError("요청 기한을 초과했습니다.")
+
             try:
-                resp = self._session.request(method, url, params=params, timeout=self.timeout)
+                remaining = None
+                if deadline:
+                    remaining = max(deadline - time.monotonic(), 0.0)
+                    if remaining <= 0:
+                        raise TimeoutError("요청 기한을 초과했습니다.")
+
+                resp = self._session.request(
+                    method,
+                    url,
+                    params=params,
+                    timeout=min(self.timeout, remaining) if remaining is not None else self.timeout,
+                )
                 self._wait_rate_limit(resp.headers)
+
                 if resp.status_code == 429:
-                    sleep_for = self.backoff * attempt
+                    last_exc = requests.HTTPError("429 Too Many Requests", response=resp)
+                    if attempt >= self.max_retries:
+                        break
+                    sleep_for = self.backoff * (attempt + 1)
+                    if deadline:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("요청 기한을 초과했습니다.")
+                        sleep_for = min(sleep_for, max(remaining, 0))
                     logger.warning("429 응답. %.2fs 대기 후 재시도", sleep_for)
-                    time.sleep(sleep_for)
+                    if sleep_for > 0:
+                        time.sleep(sleep_for)
                     continue
+
                 if resp.status_code >= 500:
                     raise requests.HTTPError(f"{resp.status_code} 서버 오류", response=resp)
+
                 resp.raise_for_status()
                 return resp.json()
+
             except Exception as exc:  # noqa: PERF203 (재시도 루프에서 필요)
                 last_exc = exc
-                sleep_for = self.backoff * attempt
-                logger.warning("요청 실패(%s). %.2fs 후 재시도 (%d/%d)", exc, sleep_for, attempt, self.max_retries)
-                time.sleep(sleep_for)
+                if attempt >= self.max_retries:
+                    break
+                sleep_for = self.backoff * (attempt + 1)
+                if deadline:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("요청 기한을 초과했습니다.")
+                    sleep_for = min(sleep_for, max(remaining, 0))
+                logger.warning(
+                    "요청 실패(%s). %.2fs 후 재시도 (%d/%d)",
+                    exc,
+                    sleep_for,
+                    attempt + 1,
+                    self.max_retries,
+                )
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+
         if last_exc:
             raise last_exc
         raise RuntimeError("요청 실패")
 
-    def list_markets(self, *, is_details: bool = False) -> List[dict]:
+    def list_markets(self, *, is_details: bool = False, deadline: float | None = None) -> List[dict]:
         params = {"isDetails": str(is_details).lower()}
-        data = self.request("GET", "/market/all", params=params)
+        data = self.request("GET", "/market/all", params=params, deadline=deadline)
         return list(data)
 
-    def ticker(self, markets: Iterable[str]) -> List[dict]:
+    def ticker(self, markets: Iterable[str], *, deadline: float | None = None) -> List[dict]:
         params = {"markets": ",".join(markets)}
-        return list(self.request("GET", "/ticker", params=params))
+        return list(self.request("GET", "/ticker", params=params, deadline=deadline))
 
-    def candles(self, *, market: str, kind: str, unit: int, count: int) -> List[dict]:
+    def candles(
+        self,
+        *,
+        market: str,
+        kind: str,
+        unit: int,
+        count: int,
+        deadline: float | None = None,
+    ) -> List[dict]:
         path = f"/candles/{kind}/{unit}" if kind == "minutes" else "/candles/days"
         params = {"market": market, "count": count}
-        data = self.request("GET", path, params=params)
+        data = self.request("GET", path, params=params, deadline=deadline)
         return list(data)
 
-    def trades(self, *, market: str, count: int = 50) -> List[dict]:
+    def trades(self, *, market: str, count: int = 50, deadline: float | None = None) -> List[dict]:
         params = {"market": market, "count": count}
-        data = self.request("GET", "/trades/ticks", params=params)
+        data = self.request("GET", "/trades/ticks", params=params, deadline=deadline)
         return list(data)
