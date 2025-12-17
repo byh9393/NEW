@@ -27,7 +27,7 @@ def _fetch_24h_volumes(
 
         batch = markets[idx : idx + 100]
         try:
-            tickers = adapter.ticker(batch)
+            tickers = adapter.ticker(batch, deadline=deadline)
         except Exception:
             # 특정 배치가 실패하더라도 나머지 배치를 계속 진행해 상위 N개 추출이
             # 완전히 무산되지 않도록 방어한다.
@@ -51,7 +51,8 @@ def fetch_markets(
     """업비트의 거래가능 시장 목록을 조회한다."""
 
     client = adapter or UpbitAdapter()
-    markets: Sequence[dict] = client.list_markets(is_details=False)
+    deadline = time.monotonic() + 8 if top_by_volume else None
+    markets: Sequence[dict] = client.list_markets(is_details=False, deadline=deadline)
 
     if not is_fiat:
         filtered = [market["market"] for market in markets]

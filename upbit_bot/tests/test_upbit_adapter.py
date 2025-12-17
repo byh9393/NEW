@@ -1,5 +1,8 @@
 import types
 
+import pytest
+import requests
+
 from upbit_bot.data.market_fetcher import fetch_markets
 from upbit_bot.data.upbit_adapter import UpbitAdapter
 
@@ -27,7 +30,7 @@ class DummyAdapter(UpbitAdapter):
         super().__init__()
         self.calls = []
 
-    def list_markets(self, *, is_details: bool = False):  # noqa: D401
+    def list_markets(self, *, is_details: bool = False, deadline=None):  # noqa: D401
         self.calls.append("list")
         return [
             {"market": "KRW-BTC"},
@@ -35,7 +38,7 @@ class DummyAdapter(UpbitAdapter):
             {"market": "USDT-XRP"},
         ]
 
-    def ticker(self, markets):  # noqa: D401
+    def ticker(self, markets, *, deadline=None):  # noqa: D401
         self.calls.append("ticker")
         return [
             {"market": "KRW-BTC", "acc_trade_price_24h": 200},
@@ -73,10 +76,36 @@ def test_fetch_markets_uses_adapter_and_filters(monkeypatch):
 
 def test_fetch_markets_limits_even_when_volume_fails():
     class FaultyAdapter(DummyAdapter):
-        def ticker(self, markets):  # noqa: D401
+        def ticker(self, markets, *, deadline=None):  # noqa: D401
             raise RuntimeError("boom")
 
     dummy = FaultyAdapter()
     markets = fetch_markets(is_fiat=True, fiat_symbol="KRW", top_by_volume=2, adapter=dummy)
     # 거래대금 조회가 실패해도 상위 N개 제한 로직은 유지되어야 한다.
     assert markets == ["KRW-BTC", "KRW-ETH"]
+
+
+def test_request_honors_deadline(monkeypatch):
+    adapter = UpbitAdapter(max_retries=5, backoff=1, timeout=5)
+    calls = []
+
+    def fake_monotonic():
+        fake_monotonic.t += 0.04
+        return fake_monotonic.t
+
+    fake_monotonic.t = 0.0
+    monkeypatch.setattr("upbit_bot.data.upbit_adapter.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("upbit_bot.data.upbit_adapter.time.sleep", lambda s: calls.append(("sleep", s)))
+
+    def fake_request(method, url, params=None, timeout=None):
+        calls.append(("timeout", timeout))
+        raise requests.Timeout("slow")
+
+    adapter._session = types.SimpleNamespace(request=fake_request)
+
+    with pytest.raises(TimeoutError):
+        adapter.request("GET", "/ticker", params={}, deadline=0.12)
+
+    # deadline이 가까우면 긴 백오프 없이 빠르게 중단해야 한다.
+    sleep_durations = [dur for kind, dur in calls if kind == "sleep"]
+    assert sum(sleep_durations) < 0.2
