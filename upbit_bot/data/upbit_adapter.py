@@ -61,26 +61,49 @@ class UpbitAdapter:
             time.sleep(self.backoff)
 
     def request(self, method: str, path: str, *, params: Optional[dict] = None) -> Any:
+        """Rate-limit과 일시적 장애에 대응하며 REST 호출을 수행한다.
+
+        ``max_retries``를 "재시도 횟수"로 해석하여, 최초 시도 + 지정된 재시도를
+        모두 수행한다. (예: ``max_retries=1`` 이면 총 2회 시도)
+        """
+
         url = f"{BASE_URL}{path}"
         last_exc: Optional[Exception] = None
-        for attempt in range(1, self.max_retries + 1):
+
+        for attempt in range(0, self.max_retries + 1):
             try:
                 resp = self._session.request(method, url, params=params, timeout=self.timeout)
                 self._wait_rate_limit(resp.headers)
+
                 if resp.status_code == 429:
-                    sleep_for = self.backoff * attempt
+                    last_exc = requests.HTTPError("429 Too Many Requests", response=resp)
+                    if attempt >= self.max_retries:
+                        break
+                    sleep_for = self.backoff * (attempt + 1)
                     logger.warning("429 응답. %.2fs 대기 후 재시도", sleep_for)
                     time.sleep(sleep_for)
                     continue
+
                 if resp.status_code >= 500:
                     raise requests.HTTPError(f"{resp.status_code} 서버 오류", response=resp)
+
                 resp.raise_for_status()
                 return resp.json()
+
             except Exception as exc:  # noqa: PERF203 (재시도 루프에서 필요)
                 last_exc = exc
-                sleep_for = self.backoff * attempt
-                logger.warning("요청 실패(%s). %.2fs 후 재시도 (%d/%d)", exc, sleep_for, attempt, self.max_retries)
+                if attempt >= self.max_retries:
+                    break
+                sleep_for = self.backoff * (attempt + 1)
+                logger.warning(
+                    "요청 실패(%s). %.2fs 후 재시도 (%d/%d)",
+                    exc,
+                    sleep_for,
+                    attempt + 1,
+                    self.max_retries,
+                )
                 time.sleep(sleep_for)
+
         if last_exc:
             raise last_exc
         raise RuntimeError("요청 실패")

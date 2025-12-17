@@ -26,7 +26,13 @@ def _fetch_24h_volumes(
             break
 
         batch = markets[idx : idx + 100]
-        tickers = adapter.ticker(batch)
+        try:
+            tickers = adapter.ticker(batch)
+        except Exception:
+            # 특정 배치가 실패하더라도 나머지 배치를 계속 진행해 상위 N개 추출이
+            # 완전히 무산되지 않도록 방어한다.
+            logger.exception("%d번째 배치 거래대금 조회 실패. 건너뜀", idx // 100)
+            continue
         for ticker in tickers:
             market = ticker.get("market")
             volume = float(ticker.get("acc_trade_price_24h", 0.0))
@@ -55,13 +61,15 @@ def fetch_markets(
     logger.info("가져온 시장 수: %d", len(filtered))
 
     if top_by_volume:
+        deadline = time.monotonic() + 8
         try:
-            deadline = time.monotonic() + 8
             volumes = _fetch_24h_volumes(filtered, client, deadline=deadline)
-            filtered = sorted(filtered, key=lambda m: volumes.get(m, 0.0), reverse=True)
-            filtered = filtered[:top_by_volume]
-            logger.info("24시간 거래대금 상위 %d개 시장으로 제한", len(filtered))
         except Exception:
-            logger.exception("거래대금 순위 조회 중 오류. 전체 목록을 반환합니다.")
+            logger.exception("거래대금 순위 조회 중 오류. 상위 %d개로만 제한합니다.", top_by_volume)
+            volumes = {}
+
+        filtered = sorted(filtered, key=lambda m: volumes.get(m, 0.0), reverse=True)
+        filtered = filtered[:top_by_volume]
+        logger.info("24시간 거래대금 상위 %d개 시장으로 제한", len(filtered))
 
     return filtered
