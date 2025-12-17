@@ -106,10 +106,10 @@ def _apply_axes_style(ax, chart_palette: Dict[str, str], *, labelsize: int = 9) 
 
     for spine in ax.spines.values():
         spine.set_color(spine_color)
-        spine.set_linewidth(0.8)
+        spine.set_linewidth(1.05)
 
     ax.tick_params(axis="both", colors=axis_color, labelsize=labelsize)
-    ax.grid(True, color=grid_color, alpha=0.35)
+    ax.grid(True, color=grid_color, alpha=0.45)
     ax.xaxis.label.set_color(chart_palette.get("text", axis_color))
     ax.yaxis.label.set_color(chart_palette.get("text", axis_color))
     ax.title.set_color(chart_palette.get("text", axis_color))
@@ -1496,9 +1496,9 @@ class DesktopDashboard(QMainWindow):
             },
             "chart": {
                 "bg": "#0f172a",
-                "grid": "#334155",
-                "spine": "#475569",
-                "axis": "#e2e8f0",
+                "grid": "#64748b",
+                "spine": "#94a3b8",
+                "axis": "#f8fafc",
                 "text": "#e2e8f0",
                 "legend_face": "#0f172a",
                 "legend_edge": "#2c3a52",
