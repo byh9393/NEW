@@ -106,10 +106,10 @@ def _apply_axes_style(ax, chart_palette: Dict[str, str], *, labelsize: int = 9) 
 
     for spine in ax.spines.values():
         spine.set_color(spine_color)
-        spine.set_linewidth(0.8)
+        spine.set_linewidth(1.05)
 
     ax.tick_params(axis="both", colors=axis_color, labelsize=labelsize)
-    ax.grid(True, color=grid_color, alpha=0.35)
+    ax.grid(True, color=grid_color, alpha=0.45)
     ax.xaxis.label.set_color(chart_palette.get("text", axis_color))
     ax.yaxis.label.set_color(chart_palette.get("text", axis_color))
     ax.title.set_color(chart_palette.get("text", axis_color))
@@ -1038,8 +1038,6 @@ class DesktopDashboard(QMainWindow):
                 self.ax.set_ylim(min_low - pad, max_high + pad)
                 self.ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: _format_price_ticks(val)))
                 self.ax.margins(y=0.05)
-                self.ax.tick_params(labelsize=9)
-
         self.ax.set_xlabel("Ticks")
         self.ax.set_ylabel("Price")
         if legend_handles:
@@ -1048,6 +1046,7 @@ class DesktopDashboard(QMainWindow):
             legend.get_frame().set_edgecolor(chart_palette.get("legend_edge"))
             for text in legend.get_texts():
                 text.set_color(chart_palette.get("text"))
+        # 전략 모니터링 차트도 다크 테마에서 축과 그리드가 묻히지 않도록 테마 색상으로 통일
         _apply_axes_style(self.ax, chart_palette, labelsize=9)
         self.canvas.draw_idle()
 
@@ -1080,6 +1079,9 @@ class DesktopDashboard(QMainWindow):
         self.heatmap_ax.set_xticks([])
         self.heatmap_ax.set_yticks([])
         self.heatmap_ax.set_title("Score Heatmap", color=chart_palette.get("text", palette.get("text")))
+
+        # 다크 테마에서도 축/테두리가 흐릿하게 보이지 않도록 팔레트 기반 스타일 적용
+        _apply_axes_style(self.heatmap_ax, chart_palette, labelsize=8)
 
         def _contrast_color(score_value: float) -> str:
             rgba = cmap(norm(score_value))
@@ -1122,12 +1124,11 @@ class DesktopDashboard(QMainWindow):
                 alpha=0.9,
                 linewidth=1.6,
             )
-        for spine in self.equity_ax.spines.values():
-            spine.set_color(chart_palette.get("spine"))
-        self.equity_ax.set_xlabel("Update", color=chart_palette.get("text", palette.get("text")))
-        self.equity_ax.set_ylabel("Total Asset", color=chart_palette.get("text", palette.get("text")))
-        self.equity_ax.tick_params(colors=chart_palette.get("text", palette.get("text")))
+        # 축/스파인/눈금 색상을 테마에 맞춰 덮어써 다크 모드에서도 대비를 확보
+        self.equity_ax.set_xlabel("Update")
+        self.equity_ax.set_ylabel("Total Asset")
         self.equity_ax.grid(True, color=chart_palette.get("grid", palette.get("border")), alpha=0.25)
+        _apply_axes_style(self.equity_ax, chart_palette, labelsize=9)
         self.equity_canvas.draw_idle()
 
     def _poll_state_store(self) -> None:
@@ -1495,9 +1496,9 @@ class DesktopDashboard(QMainWindow):
             },
             "chart": {
                 "bg": "#0f172a",
-                "grid": "#334155",
-                "spine": "#475569",
-                "axis": "#e2e8f0",
+                "grid": "#64748b",
+                "spine": "#94a3b8",
+                "axis": "#f8fafc",
                 "text": "#e2e8f0",
                 "legend_face": "#0f172a",
                 "legend_edge": "#2c3a52",
