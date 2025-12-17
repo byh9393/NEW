@@ -29,9 +29,11 @@ class DummyAdapter(UpbitAdapter):
     def __init__(self):
         super().__init__()
         self.calls = []
+        self.deadlines = []
 
     def list_markets(self, *, is_details: bool = False, deadline=None):  # noqa: D401
         self.calls.append("list")
+        self.deadlines.append(("list", deadline))
         return [
             {"market": "KRW-BTC"},
             {"market": "KRW-ETH"},
@@ -40,6 +42,7 @@ class DummyAdapter(UpbitAdapter):
 
     def ticker(self, markets, *, deadline=None):  # noqa: D401
         self.calls.append("ticker")
+        self.deadlines.append(("ticker", deadline))
         return [
             {"market": "KRW-BTC", "acc_trade_price_24h": 200},
             {"market": "KRW-ETH", "acc_trade_price_24h": 100},
@@ -83,6 +86,19 @@ def test_fetch_markets_limits_even_when_volume_fails():
     markets = fetch_markets(is_fiat=True, fiat_symbol="KRW", top_by_volume=2, adapter=dummy)
     # 거래대금 조회가 실패해도 상위 N개 제한 로직은 유지되어야 한다.
     assert markets == ["KRW-BTC", "KRW-ETH"]
+
+
+def test_fetch_markets_time_budget_is_optional(monkeypatch):
+    dummy = DummyAdapter()
+    monkeypatch.setattr("upbit_bot.data.market_fetcher.time.monotonic", lambda: 100.0)
+
+    markets = fetch_markets(
+        is_fiat=True, fiat_symbol="KRW", top_by_volume=2, time_budget=None, adapter=dummy
+    )
+
+    assert markets == ["KRW-BTC", "KRW-ETH"]
+    # 시간 제한을 전달하지 않으면 deadline이 걸리지 않는다.
+    assert dummy.deadlines == [("list", None), ("ticker", None)]
 
 
 def test_request_honors_deadline(monkeypatch):

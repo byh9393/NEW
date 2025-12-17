@@ -46,12 +46,17 @@ def fetch_markets(
     is_fiat: bool = True,
     fiat_symbol: str = "KRW",
     top_by_volume: int | None = None,
+    time_budget: float | None = None,
     adapter: UpbitAdapter | None = None,
 ) -> List[str]:
     """업비트의 거래가능 시장 목록을 조회한다."""
 
     client = adapter or UpbitAdapter()
-    deadline = time.monotonic() + 8 if top_by_volume else None
+    deadline = (
+        time.monotonic() + time_budget
+        if top_by_volume and time_budget is not None and time_budget > 0
+        else None
+    )
     markets: Sequence[dict] = client.list_markets(is_details=False, deadline=deadline)
 
     if not is_fiat:
