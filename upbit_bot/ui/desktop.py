@@ -359,8 +359,8 @@ class DesktopDashboard(QMainWindow):
         self._market_timeout_timer: Optional[QTimer] = None
 
         self._init_ui()
-        self._apply_dark_theme()
-        self._apply_modern_styles()
+        # 기본 테마를 다크 모드로 시작해 차트 축/선 색상이 바로 적용되도록 설정
+        self.theme_btn.setChecked(True)
 
     # UI 구성
     def _init_ui(self) -> None:
