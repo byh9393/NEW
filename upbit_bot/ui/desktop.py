@@ -742,14 +742,10 @@ class DesktopDashboard(QMainWindow):
         self._market_fetch_token += 1
         token = self._market_fetch_token
 
+        # 네트워크 상황이 느려도 끝까지 조회하도록 별도의 타임아웃을 걸지 않는다.
         if self._market_timeout_timer:
             self._market_timeout_timer.stop()
-        self._market_timeout_timer = QTimer(self)
-        self._market_timeout_timer.setSingleShot(True)
-        self._market_timeout_timer.timeout.connect(lambda: self._on_market_fetch_timeout(token))
-        # 마켓 조회 시 거래대금 순위를 계산하기 위해 여러 REST 호출이 필요하다.
-        # 네트워크가 살짝 지연되면 12초 제한을 넘기는 경우가 있어 여유를 둔다.
-        self._market_timeout_timer.start(20000)
+            self._market_timeout_timer = None
 
         def _fetch_markets() -> None:
             try:
@@ -757,8 +753,8 @@ class DesktopDashboard(QMainWindow):
                     is_fiat=True,
                     fiat_symbol="KRW",
                     top_by_volume=5,
-                    time_budget=18,
-                    adapter=UpbitAdapter(timeout=4, max_retries=1, backoff=0.3),
+                    time_budget=None,
+                    adapter=UpbitAdapter(timeout=8, max_retries=2, backoff=0.5),
                 )
             except Exception as exc:  # pragma: no cover - 네트워크 예외 방어
                 QTimer.singleShot(0, lambda: self._handle_market_fetch_failure(exc, token))
