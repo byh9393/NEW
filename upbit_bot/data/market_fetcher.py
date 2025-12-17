@@ -62,6 +62,7 @@ def fetch_markets(
     logger.info("가져온 시장 수: %d", len(filtered))
 
     if top_by_volume:
+        deadline = time.monotonic() + 8
         try:
             volumes = _fetch_24h_volumes(filtered, client, deadline=deadline)
         except Exception:
