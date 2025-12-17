@@ -757,6 +757,7 @@ class DesktopDashboard(QMainWindow):
                     is_fiat=True,
                     fiat_symbol="KRW",
                     top_by_volume=5,
+                    time_budget=18,
                     adapter=UpbitAdapter(timeout=4, max_retries=1, backoff=0.3),
                 )
             except Exception as exc:  # pragma: no cover - 네트워크 예외 방어
