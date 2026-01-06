@@ -131,3 +131,15 @@ python -m upbit_bot.ui.desktop
 - 실거래를 활성화하려면 환경 변수에 업비트 API 키를 설정하고 `TradingBot(simulated=False)`로 생성하거나 `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY`를 주입하세요.
 - 자동매매는 원금 손실 위험이 있습니다. 본 코드는 참고용이며, 실제 자금 운용 전 충분한 테스트와 리스크 관리가 필요합니다.
 - 업비트는 5,000원 미만 주문이 불가능하며, 본 봇은 안전을 위해 **실제 최소 주문금액 = max(봇 내부 30,000원, 거래소 min_total)**을 적용합니다. 매수 시 신호 강도를 반영해 원화 잔고 대비 5~25% 비중으로 자동 배분합니다.
+
+
+## 설정 (환경 변수)
+
+- `MIN_ORDER_KRW` : 봇이 강제하는 최소 주문 금액(원). 기본값 `20000`
+- `REGIME_STYLE` : 레짐 분류 민감도. `aggressive` / `neutral` / `conservative` (기본 `aggressive`)
+- `PER_TRADE_RISK_PCT` : 1회 진입 시 계좌 대비 리스크 캡(%)
+- `DAILY_LOSS_LIMIT_PCT` : 일 손실 제한(%)
+- `MAX_SLIPPAGE_PCT` : 슬리피지 허용(%)
+
+> 업비트 거래소의 종목별 최소 주문 금액(호가 정보)을 함께 조회하며, `MIN_ORDER_KRW`와 거래소 최소금액 중 더 큰 값을 사용합니다.
+

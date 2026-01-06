@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import queue
 import sys
 import threading
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSizePolicy,
     QSplitter,
     QTabWidget,
@@ -59,7 +61,7 @@ import matplotlib
 from matplotlib import cm
 from matplotlib import colors as mcolors
 from matplotlib import font_manager
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.lines import Line2D
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
@@ -604,10 +606,77 @@ class DesktopDashboard(QMainWindow):
         self.refresh_candles_btn = QPushButton("캔들 새로고침")
         self.refresh_candles_btn.clicked.connect(self._refresh_chart)
         top.addWidget(self.refresh_candles_btn)
+
+        top.addWidget(QLabel("타임프레임"))
+        self.timeframe_selector = QComboBox()
+        self.timeframe_selector.addItems(["1m", "3m", "5m", "15m", "1h", "4h", "1d"])
+        self.timeframe_selector.setCurrentText("5m")
+        self.timeframe_selector.currentTextChanged.connect(self._refresh_chart)
+        top.addWidget(self.timeframe_selector)
+
+        top.addWidget(QLabel("캔들"))
+        self.lookback_spin = QSpinBox()
+        self.lookback_spin.setRange(50, 2000)
+        self.lookback_spin.setValue(300)
+        self.lookback_spin.valueChanged.connect(lambda _: self._refresh_chart())
+        top.addWidget(self.lookback_spin)
+
+        top.addWidget(QLabel("프리셋"))
+        self.preset_selector = QComboBox()
+        self.preset_selector.addItems(["All", "Trend", "MeanReversion", "Breakout", "Custom"])
+        self.preset_selector.currentTextChanged.connect(self._apply_indicator_preset)
+        top.addWidget(self.preset_selector)
+
+        self.indicator_toggle_btn = QToolButton()
+        self.indicator_toggle_btn.setText("지표 설정")
+        self.indicator_toggle_btn.setCheckable(True)
+        self.indicator_toggle_btn.setChecked(False)
+        self.indicator_toggle_btn.toggled.connect(self._toggle_indicator_panel)
+        top.addWidget(self.indicator_toggle_btn)
+
         top.addStretch(1)
         chart_layout.addLayout(top)
 
-        fig = Figure(figsize=(6, 3), dpi=100)
+        # 지표 체크박스 패널 (기본: 숨김, 체크 상태는 전부 ON)
+        self._indicator_lock = False
+        self.indicator_panel = QFrame()
+        self.indicator_panel.setVisible(False)
+        panel_layout = QGridLayout(self.indicator_panel)
+        panel_layout.setContentsMargins(6, 6, 6, 6)
+        panel_layout.setHorizontalSpacing(10)
+        panel_layout.setVerticalSpacing(4)
+
+        self.indicator_checks: Dict[str, QCheckBox] = {}
+        indicator_items = [
+            ("EMA9", "ema9"),
+            ("EMA21", "ema21"),
+            ("EMA200", "ema200"),
+            ("Supertrend Weak", "st_weak"),
+            ("Supertrend Medium", "st_medium"),
+            ("Supertrend Strong", "st_strong"),
+            ("Bollinger Bands", "bb"),
+            ("Keltner Channel", "kc"),
+            ("RSI", "rsi"),
+            ("Stochastic", "stoch"),
+            ("MACD", "macd"),
+            ("%B", "pctb"),
+            ("Z-score", "zscore"),
+            ("ATR% (approx)", "atrp"),
+            ("ROC", "roc"),
+            ("Volume", "volume"),
+        ]
+        for idx, (label, key) in enumerate(indicator_items):
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            cb.toggled.connect(lambda _checked, k=key: self._on_indicator_checkbox(k))
+            self.indicator_checks[key] = cb
+            r = idx // 4
+            c = idx % 4
+            panel_layout.addWidget(cb, r, c)
+
+        chart_layout.addWidget(self.indicator_panel)
+
+        fig = Figure(figsize=(6, 4), dpi=100)
         chart_palette = self._theme_palette().get("chart", {})
         chart_bg = chart_palette.get("bg", self._theme_palette().get("card"))
         fig.patch.set_facecolor(chart_bg)
@@ -742,19 +811,27 @@ class DesktopDashboard(QMainWindow):
         self._market_fetch_token += 1
         token = self._market_fetch_token
 
-        # 네트워크 상황이 느려도 끝까지 조회하도록 별도의 타임아웃을 걸지 않는다.
+        # 마켓 조회가 네트워크/DNS 문제로 지연될 수 있어 UI 레벨 타임아웃을 둔다.
+        timeout_ms = int(os.environ.get("MARKET_FETCH_TIMEOUT_MS", "15000"))
         if self._market_timeout_timer:
             self._market_timeout_timer.stop()
-            self._market_timeout_timer = None
+        self._market_timeout_timer = QTimer(self)
+        self._market_timeout_timer.setSingleShot(True)
+        self._market_timeout_timer.timeout.connect(lambda: self._on_market_fetch_timeout(token))
+        self._market_timeout_timer.start(timeout_ms)
+        time_budget = max(timeout_ms / 1000.0 - 1.0, 3.0)
 
         def _fetch_markets() -> None:
             try:
+                # Upbit API 자체의 응답 속도보다 "초기 연결"이 지연되는 경우가 훨씬 많다.
+                # - trust_env=False: 프록시/PAC 자동탐지 지연 제거
+                # - force_ipv4=True: IPv6 우선 연결로 인한 대기 제거(대부분 환경에서 체감 큼)
                 markets_result = fetch_markets(
                     is_fiat=True,
                     fiat_symbol="KRW",
                     top_by_volume=5,
-                    time_budget=None,
-                    adapter=UpbitAdapter(timeout=8, max_retries=2, backoff=0.5),
+                    time_budget=time_budget,
+                    adapter=UpbitAdapter(timeout=6, max_retries=1, backoff=0.4, trust_env=False, force_ipv4=True),
                 )
             except Exception as exc:  # pragma: no cover - 네트워크 예외 방어
                 QTimer.singleShot(0, lambda: self._handle_market_fetch_failure(exc, token))
@@ -892,160 +969,277 @@ class DesktopDashboard(QMainWindow):
         self._refresh_equity_curve()
         self._update_status_badges(snapshot)
 
-    def _refresh_chart(self) -> None:
-        market = self.chart_selector.currentText()
-        self.ax.clear()
-        palette = self._theme_palette()
-        chart_palette = palette.get(
-            "chart",
-            {
-                "bg": palette.get("card", "white"),
-                "grid": palette.get("border", "#e2e8f0"),
-                "spine": palette.get("border", "#e2e8f0"),
-                "text": palette.get("text", "#0f172a"),
-                "legend_face": palette.get("card", "white"),
-                "legend_edge": palette.get("border", "#e2e8f0"),
-                "bull": "#22c55e",
-                "bear": "#ef4444",
-                "ema_fast": palette.get("accent_alt", "#22c55e"),
-                "ema_slow": "#a855f7",
-                "ema_long": "#f97316",
-                "fill": palette.get("accent", "#2563eb"),
-                "trade_buy": "#f59e0b",
-                "trade_sell": "#10b981",
-                "heatmap_cmap": "magma",
-                "equity_line": "#22c55e",
-                "supertrend": {},
-            },
-        )
-        bg_color = chart_palette.get("bg", palette.get("card"))
-        self.ax.figure.set_facecolor(bg_color)
-        self.ax.figure.patch.set_facecolor(bg_color)
-        self.ax.set_facecolor(chart_palette.get("bg"))
-        self.canvas.setStyleSheet(f"background-color: {bg_color};")
-        self.ax.set_title(market or "Select Market", color=chart_palette.get("text"))
-        legend_handles: List[Line2D] = []
-        if market:
-            frame = self.runner.bot.ohlcv_service.get_frame(market, "5m") if self.runner.bot else None
-            if frame is not None and not frame.empty:
-                lookback = min(len(frame), 150)
-                closes = frame["close"].tail(lookback)
-                highs = frame["high"].tail(lookback)
-                lows = frame["low"].tail(lookback)
-                opens = frame["open"].tail(lookback)
-                x = np.arange(len(closes))
-                for i, (o, h, l, c) in enumerate(zip(opens, highs, lows, closes)):
-                    color = chart_palette.get("bull") if c >= o else chart_palette.get("bear")
-                    self.ax.vlines(i, l, h, color=color, alpha=0.65)
-                    self.ax.vlines(i, min(o, c), max(o, c), color=color, linewidth=6, alpha=0.9)
-
-                legend_handles.extend(
-                    [
-                        Line2D([], [], color=chart_palette.get("bull"), linewidth=4, label="상승 캔들"),
-                        Line2D([], [], color=chart_palette.get("bear"), linewidth=4, label="하락 캔들"),
-                    ]
-                )
-
-                ema200_line: Optional[Line2D] = None
-                if len(frame) >= 200:
-                    ema200_series = technical.ema(frame["close"], 200).iloc[-len(closes) :]
-                    ema200_line = self.ax.plot(
-                        x[-len(ema200_series) :],
-                        ema200_series,
-                        color=chart_palette.get("ema_long", "#f97316"),
-                        label="EMA200",
-                        linewidth=1.8,
-                        alpha=0.8,
-                    )[0]
-                    legend_handles.append(ema200_line)
-
-                if len(closes) >= 9:
-                    ema9 = closes.ewm(span=9).mean()
-                    ema21 = closes.ewm(span=21).mean()
-                    ema9_line = self.ax.plot(
-                        x,
-                        ema9,
-                        color=chart_palette.get("ema_fast", "#22d3ee"),
-                        label="EMA9",
-                        linewidth=1.0,
-                        alpha=0.85,
-                    )[0]
-                    ema21_line = self.ax.plot(
-                        x,
-                        ema21,
-                        color=chart_palette.get("ema_slow", "#a855f7"),
-                        label="EMA21",
-                        linewidth=1.0,
-                        alpha=0.85,
-                    )[0]
-                    legend_handles.extend([ema9_line, ema21_line])
-
-                supertrend_handles: List[Line2D] = []
-                for name, period, mult in _SUPERTREND_CONFIGS:
-                    if len(frame) < max(period, 5):
+        def _refresh_chart(self) -> None:
+            market = self.chart_selector.currentText()
+            palette = self._theme_palette()
+            chart_palette = palette.get(
+                "chart",
+                {
+                    "bg": palette.get("card", "white"),
+                    "grid": palette.get("border", "#e2e8f0"),
+                    "spine": palette.get("border", "#e2e8f0"),
+                    "text": palette.get("text", "#0f172a"),
+                    "legend_face": palette.get("card", "white"),
+                    "legend_edge": palette.get("border", "#e2e8f0"),
+                    "bull": "#22c55e",
+                    "bear": "#ef4444",
+                    "ema_fast": palette.get("accent_alt", "#22c55e"),
+                    "ema_slow": palette.get("accent", "#06b6d4"),
+                    "ema_long": "#f97316",
+                    "fill": palette.get("accent", "#06b6d4"),
+                    "trade_buy": "#f59e0b",
+                    "trade_sell": "#10b981",
+                    "supertrend": {},
+                },
+            )
+    
+            bg_color = chart_palette.get("bg", palette.get("card"))
+            fig = self.canvas.figure
+            fig.set_facecolor(bg_color)
+            fig.patch.set_facecolor(bg_color)
+            self.canvas.setStyleSheet(f"background-color: {bg_color};")
+            self.indicator_panel.setStyleSheet(f"background-color: {bg_color};")
+    
+            axes = [self.ax_price, self.ax_vol, self.ax_osc, self.ax_macd, self.ax_misc]
+            for ax in axes:
+                ax.clear()
+                ax.set_facecolor(bg_color)
+                for spine in ax.spines.values():
+                    spine.set_color(chart_palette.get("spine"))
+                ax.grid(True, color=chart_palette.get("grid"), alpha=0.25)
+    
+            self.ax_price.set_title(market or "Select Market", color=chart_palette.get("text"))
+    
+            # Early exit
+            if not market or not self.runner or not self.runner.bot:
+                self.canvas.draw_idle()
+                return
+    
+            timeframe = self.timeframe_selector.currentText() if hasattr(self, "timeframe_selector") else "5m"
+            lookback = int(self.lookback_spin.value()) if hasattr(self, "lookback_spin") else 150
+    
+            frame = self.runner.bot.ohlcv_service.get_frame(market, timeframe)
+            if frame is None or frame.empty:
+                self.canvas.draw_idle()
+                return
+    
+            # ensure columns
+            for col in ("open", "high", "low", "close", "volume"):
+                if col not in frame.columns:
+                    if "close" in frame.columns and col in ("open", "high", "low"):
+                        frame[col] = frame["close"]
+                    elif col == "volume":
+                        frame[col] = 0.0
+    
+            frame = frame.tail(min(len(frame), lookback)).copy()
+            closes = frame["close"].astype(float)
+            highs = frame["high"].astype(float)
+            lows = frame["low"].astype(float)
+            opens = frame["open"].astype(float)
+            vols = frame["volume"].astype(float)
+    
+            x = np.arange(len(frame))
+    
+            # Candles (price axis)
+            for i, (o, h, l, c) in enumerate(zip(opens, highs, lows, closes)):
+                color = chart_palette.get("bull") if c >= o else chart_palette.get("bear")
+                self.ax_price.vlines(i, l, h, color=color, alpha=0.65, linewidth=1.0)
+                self.ax_price.vlines(i, min(o, c), max(o, c), color=color, linewidth=6, alpha=0.9)
+    
+            # Overlays (price axis) - controlled by checkboxes
+            enabled = {k for k, cb in getattr(self, "indicator_checks", {}).items() if cb.isChecked()}
+    
+            if "ema9" in enabled:
+                ema9 = technical.ema(closes, 9)
+                self.ax_price.plot(x[-len(ema9):], ema9, color=chart_palette.get("ema_fast", "#22d3ee"), linewidth=1.0, alpha=0.85, label="EMA9")
+            if "ema21" in enabled:
+                ema21 = technical.ema(closes, 21)
+                self.ax_price.plot(x[-len(ema21):], ema21, color=chart_palette.get("ema_slow", "#a855f7"), linewidth=1.0, alpha=0.85, label="EMA21")
+            if "ema200" in enabled and len(closes) >= 200:
+                ema200 = technical.ema(frame["close"].astype(float), 200)
+                ema200 = ema200.iloc[-len(closes):]
+                self.ax_price.plot(x[-len(ema200):], ema200, color=chart_palette.get("ema_long", "#f97316"), linewidth=1.8, alpha=0.8, label="EMA200")
+    
+            if "bb" in enabled and len(closes) >= 20:
+                bb = technical.bollinger_bands(closes, window=20, num_std=2.0)
+                if not bb.empty:
+                    upper = bb["upper"].iloc[-len(closes):].to_numpy(dtype=float)
+                    mid = bb["middle"].iloc[-len(closes):].to_numpy(dtype=float)
+                    lower = bb["lower"].iloc[-len(closes):].to_numpy(dtype=float)
+                    self.ax_price.plot(x, upper, linewidth=1.0, alpha=0.5, label="BB upper")
+                    self.ax_price.plot(x, mid, linewidth=1.0, alpha=0.4, label="BB mid")
+                    self.ax_price.plot(x, lower, linewidth=1.0, alpha=0.5, label="BB lower")
+                    self.ax_price.fill_between(x, lower, upper, alpha=0.06)
+    
+            if "kc" in enabled and len(closes) >= 20:
+                kc = technical.keltner_channel(closes, ema_period=20, atr_period=14, atr_mult=1.5)
+                if not kc.empty:
+                    upper = kc["upper"].iloc[-len(closes):].to_numpy(dtype=float)
+                    mid = kc["middle"].iloc[-len(closes):].to_numpy(dtype=float)
+                    lower = kc["lower"].iloc[-len(closes):].to_numpy(dtype=float)
+                    self.ax_price.plot(x, upper, linewidth=1.0, alpha=0.45, linestyle="--", label="KC upper")
+                    self.ax_price.plot(x, mid, linewidth=1.0, alpha=0.35, linestyle="--", label="KC mid")
+                    self.ax_price.plot(x, lower, linewidth=1.0, alpha=0.45, linestyle="--", label="KC lower")
+    
+            # Supertrend 3 levels
+            if any(k in enabled for k in ("st_weak", "st_medium", "st_strong")):
+                st_levels = [("weak", 7, 2.0, "st_weak"), ("medium", 10, 3.0, "st_medium"), ("strong", 14, 4.0, "st_strong")]
+                for name, period, mult, key in st_levels:
+                    if key not in enabled:
                         continue
-                    st_df = technical.supertrend(frame["close"], period=period, multiplier=mult)
-                    series = st_df["supertrend"].iloc[-len(closes) :]
+                    st_df = technical.supertrend(frame["close"].astype(float), period=period, multiplier=mult)
+                    series = st_df["supertrend"].iloc[-len(closes):]
                     if series.empty:
                         continue
-                    styles = dict(_SUPERTREND_STYLES.get(name, {}))
-                    st_colors = chart_palette.get("supertrend", {})
-                    if name in st_colors:
-                        styles["color"] = st_colors[name]
-                    styles.setdefault("alpha", 0.85)
-                    linewidth = styles.pop("linewidth", 1.2)
-                    st_line = self.ax.plot(
-                        x[-len(series) :],
-                        series,
-                        label=f"Supertrend {name}",
-                        linewidth=linewidth,
-                        **styles,
-                    )[0]
-                    supertrend_handles.append(st_line)
-                legend_handles.extend(supertrend_handles)
+                    self.ax_price.plot(x[-len(series):], series, linewidth=1.2, alpha=0.85, label=f"Supertrend {name}")
+    
+            # Trade markers (price axis)
+            trades = (self.state_store_reader.load_recent_trades(limit=80) if self.state_store_reader else [])
+            for t in trades:
+                if t.get("market") != market:
+                    continue
+                marker_y = float(t.get("price") or closes.iloc[-1])
+                is_sell = t.get("side") == "ask"
+                color = chart_palette.get("trade_sell") if is_sell else chart_palette.get("trade_buy")
+                marker = "^" if is_sell else "v"
+                self.ax_price.scatter([len(closes) - 1], [marker_y], s=80, marker=marker, color=color, alpha=0.9)
+    
+            # Volume axis
+            if "volume" in enabled:
+                self.ax_vol.bar(x, vols.to_numpy(dtype=float), alpha=0.35, label="Volume")
+            self.ax_vol.set_ylabel("Vol", color=chart_palette.get("text"))
+            self.ax_vol.tick_params(axis="y", labelcolor=chart_palette.get("text"))
+    
+            # Oscillator axis (0-100)
+            if "rsi" in enabled:
+                rsi_series = technical.rsi(closes, period=14).iloc[-len(closes):]
+                self.ax_osc.plot(x[-len(rsi_series):], rsi_series, linewidth=1.2, alpha=0.9, label="RSI")
+                self.ax_osc.axhline(70, alpha=0.25, linewidth=1.0)
+                self.ax_osc.axhline(30, alpha=0.25, linewidth=1.0)
+    
+            if "stoch" in enabled:
+                stoch = technical.stochastic_oscillator(closes, k_period=14, d_period=3)
+                k = stoch["%K"].iloc[-len(closes):]
+                d = stoch["%D"].iloc[-len(closes):]
+                self.ax_osc.plot(x[-len(k):], k, linewidth=1.0, alpha=0.85, label="Stoch %K")
+                self.ax_osc.plot(x[-len(d):], d, linewidth=1.0, alpha=0.85, label="Stoch %D")
+                self.ax_osc.axhline(80, alpha=0.20, linewidth=1.0)
+                self.ax_osc.axhline(20, alpha=0.20, linewidth=1.0)
+    
+            if "pctb" in enabled and "bb" in enabled and len(closes) >= 20:
+                bb = technical.bollinger_bands(closes, window=20, num_std=2.0)
+                if not bb.empty:
+                    upper = bb["upper"].iloc[-len(closes):]
+                    lower = bb["lower"].iloc[-len(closes):]
+                    pctb = (closes - lower) / (upper - lower + 1e-9) * 100
+                    self.ax_osc.plot(x, pctb, linewidth=1.0, alpha=0.65, label="%B")
+    
+            self.ax_osc.set_ylim(0, 100)
+            self.ax_osc.set_ylabel("Osc", color=chart_palette.get("text"))
+            self.ax_osc.tick_params(axis="y", labelcolor=chart_palette.get("text"))
+    
+            # MACD axis
+            if "macd" in enabled:
+                macd_df = technical.macd(closes)
+                macd_line = macd_df["macd"].iloc[-len(closes):]
+                sig_line = macd_df["signal"].iloc[-len(closes):]
+                hist = macd_df["hist"].iloc[-len(closes):]
+                self.ax_macd.plot(x[-len(macd_line):], macd_line, linewidth=1.1, alpha=0.9, label="MACD")
+                self.ax_macd.plot(x[-len(sig_line):], sig_line, linewidth=1.0, alpha=0.85, label="Signal")
+                self.ax_macd.bar(x[-len(hist):], hist.to_numpy(dtype=float), alpha=0.3, label="Hist")
+                self.ax_macd.axhline(0, alpha=0.25, linewidth=1.0)
+    
+            self.ax_macd.set_ylabel("MACD", color=chart_palette.get("text"))
+            self.ax_macd.tick_params(axis="y", labelcolor=chart_palette.get("text"))
+    
+            # Misc axis (Z-score, ATR%, ROC)
+            if "zscore" in enabled and len(closes) >= 50:
+                z = technical.zscore(closes, lookback=50).iloc[-len(closes):]
+                self.ax_misc.plot(x[-len(z):], z, linewidth=1.0, alpha=0.9, label="Z-score")
+                self.ax_misc.axhline(0, alpha=0.25, linewidth=1.0)
+    
+            if "atrp" in enabled and len(closes) >= 20:
+                atr = technical.atr_like(closes, period=14)
+                atrp = atr / (closes + 1e-9) * 100
+                self.ax_misc.plot(x[-len(atrp):], atrp, linewidth=1.0, alpha=0.85, label="ATR%")
+    
+            if "roc" in enabled and len(closes) >= 15:
+                n = 10
+                roc = (closes / (closes.shift(n) + 1e-9) - 1) * 100
+                roc = roc.fillna(0.0)
+                self.ax_misc.plot(x[-len(roc):], roc, linewidth=1.0, alpha=0.75, label="ROC(10)")
+    
+            self.ax_misc.set_ylabel("Misc", color=chart_palette.get("text"))
+            self.ax_misc.tick_params(axis="y", labelcolor=chart_palette.get("text"))
+    
+            # Formatting / legends
+            for ax in [self.ax_price, self.ax_vol, self.ax_osc, self.ax_macd, self.ax_misc]:
+                ax.tick_params(axis="x", labelcolor=chart_palette.get("text"))
+                ax.tick_params(axis="y", labelcolor=chart_palette.get("text"))
+    
+            # Hide x labels except last axis
+            for ax in [self.ax_price, self.ax_vol, self.ax_osc, self.ax_macd]:
+                ax.tick_params(axis="x", labelbottom=False)
+    
+            self.ax_misc.xaxis.set_major_formatter(FuncFormatter(lambda val, _: str(int(val))))
+            self.ax_price.yaxis.set_major_formatter(FuncFormatter(lambda val, _: _format_krw(val)))
+    
+            # Price ylim padding
+            max_high = float(highs.max())
+            min_low = float(lows.min())
+            pad = max((max_high - min_low) * 0.08, 1)
+            self.ax_price.set_ylim(min_low - pad, max_high + pad)
+    
+            # Legends (compact)
+            self.ax_price.legend(loc="upper left", fontsize=8, frameon=True)
+            if "volume" in enabled:
+                self.ax_vol.legend(loc="upper left", fontsize=8, frameon=True)
+            if any(k in enabled for k in ("rsi", "stoch", "pctb")):
+                self.ax_osc.legend(loc="upper left", fontsize=8, frameon=True)
+            if "macd" in enabled:
+                self.ax_macd.legend(loc="upper left", fontsize=8, frameon=True)
+            if any(k in enabled for k in ("zscore", "atrp", "roc")):
+                self.ax_misc.legend(loc="upper left", fontsize=8, frameon=True)
+    
+            self.canvas.draw_idle()
 
-                self.ax.fill_between(x, closes, color=chart_palette.get("fill"), alpha=0.08)
-                # trade markers
-                trades = (self.state_store_reader.load_recent_trades(limit=50) if self.state_store_reader else [])
-                has_buy_trade = False
-                has_sell_trade = False
-                for t in trades:
-                    if t.get("market") == market:
-                        idx = len(closes) - 1
-                        marker_y = t.get("price", closes.iloc[-1])
-                        is_sell = t.get("side") == "ask"
-                        color = chart_palette.get("trade_sell") if is_sell else chart_palette.get("trade_buy")
-                        marker = "^" if is_sell else "v"
-                        self.ax.scatter(idx, marker_y, color=color, marker=marker, zorder=6, alpha=0.9)
-                        has_sell_trade = has_sell_trade or is_sell
-                        has_buy_trade = has_buy_trade or not is_sell
 
-                if has_buy_trade:
-                    legend_handles.append(
-                        Line2D([], [], color=chart_palette.get("trade_buy"), marker="v", linestyle="None", label="매수 체결")
-                    )
-                if has_sell_trade:
-                    legend_handles.append(
-                        Line2D([], [], color=chart_palette.get("trade_sell"), marker="^", linestyle="None", label="매도 체결")
-                    )
+    def _toggle_indicator_panel(self, checked: bool) -> None:
+        if not hasattr(self, "indicator_panel"):
+            return
+        self.indicator_panel.setVisible(bool(checked))
 
-                max_high = float(highs.max())
-                min_low = float(lows.min())
-                pad = max((max_high - min_low) * 0.08, 1)
-                self.ax.set_ylim(min_low - pad, max_high + pad)
-                self.ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: _format_price_ticks(val)))
-                self.ax.margins(y=0.05)
-        self.ax.set_xlabel("Ticks")
-        self.ax.set_ylabel("Price")
-        if legend_handles:
-            legend = self.ax.legend(handles=legend_handles, loc="upper left")
-            legend.get_frame().set_facecolor(chart_palette.get("legend_face"))
-            legend.get_frame().set_edgecolor(chart_palette.get("legend_edge"))
-            for text in legend.get_texts():
-                text.set_color(chart_palette.get("text"))
-        # 전략 모니터링 차트도 다크 테마에서 축과 그리드가 묻히지 않도록 테마 색상으로 통일
-        _apply_axes_style(self.ax, chart_palette, labelsize=9)
-        self.canvas.draw_idle()
+    def _apply_indicator_preset(self, name: str) -> None:
+        if not hasattr(self, "indicator_checks") or not self.indicator_checks:
+            return
+        if name == "Custom":
+            self._refresh_chart()
+            return
+
+        presets: Dict[str, Set[str]] = {
+            "All": set(self.indicator_checks.keys()),
+            "Trend": {"ema9", "ema21", "ema200", "st_weak", "st_medium", "st_strong", "volume"},
+            "MeanReversion": {"bb", "kc", "rsi", "stoch", "pctb", "zscore", "atrp", "volume"},
+            "Breakout": {"ema9", "ema21", "ema200", "bb", "kc", "macd", "roc", "atrp", "volume"},
+        }
+        enabled = presets.get(name, set(self.indicator_checks.keys()))
+
+        self._indicator_lock = True
+        try:
+            for k, cb in self.indicator_checks.items():
+                cb.setChecked(k in enabled)
+        finally:
+            self._indicator_lock = False
+        self._refresh_chart()
+
+    def _on_indicator_checkbox(self, key: str) -> None:
+        if getattr(self, "_indicator_lock", False):
+            return
+        # 사용자가 수동 변경하면 프리셋을 Custom으로 전환
+        if hasattr(self, "preset_selector") and self.preset_selector.currentText() != "Custom":
+            self.preset_selector.setCurrentText("Custom")
+        self._refresh_chart()
+
 
     def _refresh_heatmap(self) -> None:
         entries = self.heatmap_cache

@@ -11,7 +11,18 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+import os
+
+import socket
+
 import requests
+from requests.adapters import HTTPAdapter
+
+try:
+    # urllib3는 requests의 내부 의존성이다.
+    from urllib3.util import connection as urllib3_connection
+except Exception:  # pragma: no cover
+    urllib3_connection = None
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +57,46 @@ class RateLimit:
 
 
 class UpbitAdapter:
-    def __init__(self, *, timeout: int = 10, max_retries: int = 3, backoff: float = 0.6) -> None:
+    def __init__(
+        self,
+        *,
+        timeout: int = 10,
+        max_retries: int = 3,
+        backoff: float = 0.6,
+        trust_env: bool = False,
+        force_ipv4: bool | None = None,
+        pool_maxsize: int = 20,
+        user_agent: str = "NEW-UpbitBot/1.0",
+    ) -> None:
+        """Upbit REST 어댑터.
+
+        느린 '마켓 조회'의 가장 흔한 원인은 다음 두 가지다.
+        1) 운영체제 프록시/자동 설정(PAC) 탐색으로 인해 requests가 지연됨
+        2) IPv6 우선 시도 후 타임아웃까지 기다린 뒤 IPv4로 넘어가며 지연됨
+
+        - trust_env=False: 환경변수 프록시/시스템 프록시 자동 적용을 끈다.
+        - force_ipv4=True: (가능한 경우) IPv4만 사용하도록 강제해 초기 연결 지연을 줄인다.
+        """
+
         self._session = requests.Session()
+        self._session.trust_env = bool(trust_env)
+        self._session.headers.update({"User-Agent": user_agent, "Accept-Encoding": "gzip"})
+
+        # 커넥션 풀을 적극적으로 재사용해 TLS 핸드셰이크/연결 비용을 줄인다.
+        adapter = HTTPAdapter(pool_connections=pool_maxsize, pool_maxsize=pool_maxsize)
+        self._session.mount("https://", adapter)
+
+        if force_ipv4 is None:
+            env = os.environ.get("UPBIT_FORCE_IPV4", "1").strip().lower()
+            force_ipv4 = env not in {"0", "false", "no", "off"}
+
+        if force_ipv4 and urllib3_connection is not None:
+            # requests -> urllib3의 DNS 해석에서 IPv4만 사용하도록 강제
+            try:
+                urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+            except Exception:
+                logger.debug("IPv4 강제 설정 실패", exc_info=True)
+
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff = backoff

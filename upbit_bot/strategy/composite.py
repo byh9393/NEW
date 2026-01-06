@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -34,6 +34,7 @@ class Decision:
     reason: str
     quality: float = 0.0
     suppress_log: bool = False
+    strategy: str = "supertrend"
 
 
 _SUPERTREND_CONFIGS: Tuple[Tuple[str, int, float], ...] = (
@@ -71,7 +72,7 @@ def _describe_state(states: Dict[str, Tuple[int, float]]) -> str:
     return "중립"
 
 
-def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 40, sell_threshold: float = -40) -> Decision:
+def evaluate(market: str, prices: pd.Series, *, buy_threshold: float = 40, sell_threshold: float = -40, frame: Optional[pd.DataFrame] = None) -> Decision:
     """Supertrend·200EMA 기반 매수/매도 판단."""
 
     if prices.empty or prices.size < 20:

@@ -34,9 +34,9 @@ def mean_reversion_signal(market: str, prices: pd.Series, config: MeanRevConfig 
 
     if z < -config.z_entry and rsi_val < config.rsi_low:
         score = max(config.min_score, abs(z) * 20)
-        return Decision(market, last, score, Signal.BUY, f"BB 과매도 Z={z:.2f}, RSI={rsi_val:.1f}")
+        return Decision(market, last, score, Signal.BUY, f"BB 과매도 Z={z:.2f}, RSI={rsi_val:.1f}", strategy="mean_reversion")
     if z > config.z_entry and rsi_val > config.rsi_high:
         score = -max(config.min_score, abs(z) * 20)
-        return Decision(market, last, score, Signal.SELL, f"BB 과매수 Z={z:.2f}, RSI={rsi_val:.1f}")
+        return Decision(market, last, score, Signal.SELL, f"BB 과매수 Z={z:.2f}, RSI={rsi_val:.1f}", strategy="mean_reversion")
 
-    return Decision(market, last, 0.0, Signal.HOLD, "평균회귀 없음")
+    return Decision(market, last, 0.0, Signal.HOLD, "평균회귀 없음", strategy="mean_reversion")

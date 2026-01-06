@@ -220,6 +220,7 @@ def validate_order(
     volume: float,
     constraints: Optional[OrderChance],
     simulated: bool,
+    min_order_krw: float = 20_000.0,
 ) -> ValidationResult:
     logs: List[str] = []
     if price <= 0 or volume <= 0:
@@ -232,7 +233,8 @@ def validate_order(
         normalized_price = _normalize_price(price, tick)
         if abs(normalized_price - price) > 1e-6:
             logs.append(f"호가 단위에 맞게 가격을 {normalized_price}로 보정 필요")
-        min_total = constraints.bid_min_total if side == "bid" else constraints.ask_min_total
+        min_total_exchange = constraints.bid_min_total if side == "bid" else constraints.ask_min_total
+        min_total = max(float(min_total_exchange or 0.0), float(min_order_krw or 0.0))
         max_total = constraints.max_total or float("inf")
         if notional < min_total:
             reason = f"주문 금액이 거래소 최소금액 {min_total:.0f}원 미만입니다."
@@ -240,6 +242,11 @@ def validate_order(
         if notional > max_total:
             reason = f"주문 금액이 거래소 최대금액 {max_total:.0f}원을 초과합니다."
             return ValidationResult(False, logs, reason)
+    elif simulated and not constraints:
+        if notional < float(min_order_krw or 0.0):
+            reason = f"주문 금액이 봇 최소금액 {float(min_order_krw):.0f}원 미만입니다."
+            return ValidationResult(False, logs, reason)
+
     elif not simulated and not constraints:
         reason = "거래소 최소·최대 금액/호가 정보를 가져오지 못해 주문을 진행하지 않습니다."
         return ValidationResult(False, logs, reason)

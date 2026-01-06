@@ -33,9 +33,9 @@ def breakout_signal(market: str, prices: pd.Series, volumes: Optional[pd.Series]
 
     if last > recent_high and vol_ok:
         score = (last - recent_high) / (recent_high + 1e-9) * 100
-        return Decision(market, last, max(score, config.min_score), Signal.BUY, f"돌파 매수 {recent_high:.1f}")
+        return Decision(market, last, max(score, config.min_score), Signal.BUY, f"돌파 매수 {recent_high:.1f}", strategy="breakout")
     if last < recent_low and vol_ok:
         score = -(recent_low - last) / (recent_low + 1e-9) * 100
-        return Decision(market, last, min(score, -config.min_score), Signal.SELL, f"하락 돌파 {recent_low:.1f}")
+        return Decision(market, last, min(score, -config.min_score), Signal.SELL, f"하락 돌파 {recent_low:.1f}", strategy="breakout")
 
-    return Decision(market, last, 0.0, Signal.HOLD, "돌파 없음")
+    return Decision(market, last, 0.0, Signal.HOLD, "돌파 없음", strategy="breakout")

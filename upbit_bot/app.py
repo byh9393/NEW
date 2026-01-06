@@ -20,6 +20,7 @@ from upbit_bot.data.stream import PriceBuffer
 from upbit_bot.data.ohlcv_service import OhlcvService
 from upbit_bot.data.universe import UniverseManager
 from upbit_bot.strategy.composite import Decision, Signal, evaluate
+from upbit_bot.strategy.regime_router import evaluate_regime_switch
 from upbit_bot.strategy.openai_assistant import AIDecision, evaluate_with_openai
 from upbit_bot.strategy.multiframe import MultiTimeframeAnalyzer, MultiTimeframeFactor
 from upbit_bot.trading.account import AccountSnapshot, Holding, fetch_account_snapshot
@@ -101,6 +102,8 @@ class TradingBot:
         self._access = os.environ.get("UPBIT_ACCESS_KEY", "")
         self._secret = os.environ.get("UPBIT_SECRET_KEY", "")
         self.fee_rate = fee_rate
+        self.min_order_krw: float = float(os.environ.get("MIN_ORDER_KRW", 20_000))
+        self.regime_style: str = os.environ.get("REGIME_STYLE", "aggressive")
         self.total_fees: float = 0.0
         self.initial_value: Optional[float] = None
         self.max_slippage_pct: float = float(os.environ.get("MAX_SLIPPAGE_PCT", 0.5))
@@ -154,7 +157,7 @@ class TradingBot:
         self.global_enabled: bool = True
         self.emergency_stop_active: bool = False
         self.force_exit_on_stop: bool = False
-        self.strategy_switches: Dict[str, bool] = {"supertrend": True}
+        self.strategy_switches: Dict[str, bool] = {"supertrend": True, "mean_reversion": True, "breakout": True}
         self._last_signal_ts: Dict[str, float] = {}
         self._recover_state()
 
@@ -208,7 +211,14 @@ class TradingBot:
                 }
             )
 
-            base_decision = evaluate(market, primary)
+            base_decision = evaluate_regime_switch(
+                market,
+                primary_frame,
+                style=self.regime_style,
+                enable_trend=self.strategy_switches.get("supertrend", True),
+                enable_mean_reversion=self.strategy_switches.get("mean_reversion", True),
+                enable_breakout=self.strategy_switches.get("breakout", True),
+            )
             decision = base_decision
             ai_raw = ""
 
@@ -263,6 +273,10 @@ class TradingBot:
                 rejection_reason = rejection_reason or "전략 전체 OFF"
             if not any(self.strategy_switches.values()) and decision.signal == Signal.BUY:
                 rejection_reason = rejection_reason or "모든 전략이 비활성화됨"
+            if decision.signal == Signal.BUY:
+                strat = getattr(decision, "strategy", "supertrend")
+                if strat in self.strategy_switches and not self.strategy_switches.get(strat, True):
+                    rejection_reason = rejection_reason or f"전략 비활성화: {strat}"
             allow_emergency_sell = False
             if self.emergency_stop_active:
                 if decision.signal == Signal.BUY:
@@ -395,6 +409,7 @@ class TradingBot:
             volume=plan.volume,
             constraints=constraints,
             simulated=self.simulated or not self._access or not self._secret,
+            min_order_krw=self.min_order_krw,
         )
         logs = plan.logs + validation.logs
         if not validation.ok:
@@ -421,6 +436,7 @@ class TradingBot:
             volume=plan.volume,
             price=plan.price,
             simulated=self.simulated or not self._access or not self._secret,
+            min_order_krw=self.min_order_krw,
             fee_rate=fee_rate,
             validation_logs=logs,
         )
@@ -523,6 +539,15 @@ class TradingBot:
             fetch_spread_if_missing=False,
         )
         self.active_markets = snapshot.eligible or list(self.markets)
+        # 보유 종목은 유니버스 탈락 여부와 무관하게 항상 포함
+        try:
+            snapshot_acc = self.account_snapshot
+            holding_markets = {h.market for h in snapshot_acc.holdings} if snapshot_acc else set(self.positions.keys())
+            holding_markets = {m for m in holding_markets if str(m).startswith("KRW-")}
+            if holding_markets:
+                self.active_markets = sorted(set(self.active_markets).union(holding_markets))
+        except Exception:
+            logger.exception("보유 종목 유니버스 포함 처리 실패")
         reason = (
             f"유니버스 갱신: {len(self.active_markets)}/{len(self.markets)}개 채택, "
             f"최소 30일 평균 거래대금 {self.min_30d_turnover:,.0f}, 스프레드 {self.max_spread_pct:.2f}%"
@@ -607,7 +632,7 @@ class TradingBot:
             min_total_exchange = constraints.bid_min_total if decision.signal == Signal.BUY else constraints.ask_min_total
         else:
             min_total_exchange = 0.0
-        min_total = max(30_000.0, min_total_exchange)
+        min_total = max(float(self.min_order_krw), float(min_total_exchange))
         min_volume = min_total / (price * (1 - fee_rate))
         equity = snapshot.total_value if snapshot else self.krw_balance
         risk_cap_amount = equity * (self.per_trade_risk_pct / 100.0)
