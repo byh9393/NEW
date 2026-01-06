@@ -72,7 +72,7 @@ def _fetch_24h_volumes(
 
         batch = markets[idx : idx + 100]
         try:
-            tickers = adapter.ticker(batch, deadline=deadline)
+            tickers = adapter.ticker(batch, deadline=deadline, rate_limit_wait=False)
         except Exception:
             # 특정 배치가 실패하더라도 나머지 배치를 계속 진행해 상위 N개 추출이
             # 완전히 무산되지 않도록 방어한다.
@@ -115,8 +115,18 @@ def fetch_markets(
     )
 
     t0 = time.perf_counter()
-    markets: Sequence[dict] = client.list_markets(is_details=False, deadline=deadline)
+    markets: Sequence[dict] = client.list_markets(
+        is_details=False,
+        deadline=deadline,
+        rate_limit_wait=False,
+    )
     t1 = time.perf_counter()
+    elapsed = t1 - t0
+    if elapsed > 2.0:
+        logger.warning(
+            "market/all 응답이 느립니다(%.2fs). 프록시 자동탐지/IPv6 우선 연결 여부를 확인하세요.",
+            elapsed,
+        )
 
     if not is_fiat:
         base_markets = [market["market"] for market in markets]
