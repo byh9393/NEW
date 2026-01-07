@@ -116,6 +116,7 @@ class UpbitAdapter:
         *,
         params: Optional[dict] = None,
         deadline: float | None = None,
+        rate_limit_wait: bool = True,
     ) -> Any:
         """Rate-limit과 일시적 장애에 대응하며 REST 호출을 수행한다.
 
@@ -144,7 +145,8 @@ class UpbitAdapter:
                     params=params,
                     timeout=min(self.timeout, remaining) if remaining is not None else self.timeout,
                 )
-                self._wait_rate_limit(resp.headers)
+                if rate_limit_wait:
+                    self._wait_rate_limit(resp.headers)
 
                 if resp.status_code == 429:
                     last_exc = requests.HTTPError("429 Too Many Requests", response=resp)
@@ -191,14 +193,40 @@ class UpbitAdapter:
             raise last_exc
         raise RuntimeError("요청 실패")
 
-    def list_markets(self, *, is_details: bool = False, deadline: float | None = None) -> List[dict]:
+    def list_markets(
+        self,
+        *,
+        is_details: bool = False,
+        deadline: float | None = None,
+        rate_limit_wait: bool = True,
+    ) -> List[dict]:
         params = {"isDetails": str(is_details).lower()}
-        data = self.request("GET", "/market/all", params=params, deadline=deadline)
+        data = self.request(
+            "GET",
+            "/market/all",
+            params=params,
+            deadline=deadline,
+            rate_limit_wait=rate_limit_wait,
+        )
         return list(data)
 
-    def ticker(self, markets: Iterable[str], *, deadline: float | None = None) -> List[dict]:
+    def ticker(
+        self,
+        markets: Iterable[str],
+        *,
+        deadline: float | None = None,
+        rate_limit_wait: bool = True,
+    ) -> List[dict]:
         params = {"markets": ",".join(markets)}
-        return list(self.request("GET", "/ticker", params=params, deadline=deadline))
+        return list(
+            self.request(
+                "GET",
+                "/ticker",
+                params=params,
+                deadline=deadline,
+                rate_limit_wait=rate_limit_wait,
+            )
+        )
 
     def candles(
         self,

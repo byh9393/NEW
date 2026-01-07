@@ -31,7 +31,13 @@ class DummyAdapter(UpbitAdapter):
         self.calls = []
         self.deadlines = []
 
-    def list_markets(self, *, is_details: bool = False, deadline=None):  # noqa: D401
+    def list_markets(  # noqa: D401
+        self,
+        *,
+        is_details: bool = False,
+        deadline=None,
+        rate_limit_wait: bool = True,
+    ):
         self.calls.append("list")
         self.deadlines.append(("list", deadline))
         return [
@@ -40,7 +46,7 @@ class DummyAdapter(UpbitAdapter):
             {"market": "USDT-XRP"},
         ]
 
-    def ticker(self, markets, *, deadline=None):  # noqa: D401
+    def ticker(self, markets, *, deadline=None, rate_limit_wait: bool = True):  # noqa: D401
         self.calls.append("ticker")
         self.deadlines.append(("ticker", deadline))
         return [
@@ -79,7 +85,7 @@ def test_fetch_markets_uses_adapter_and_filters(monkeypatch):
 
 def test_fetch_markets_limits_even_when_volume_fails():
     class FaultyAdapter(DummyAdapter):
-        def ticker(self, markets, *, deadline=None):  # noqa: D401
+        def ticker(self, markets, *, deadline=None, rate_limit_wait: bool = True):  # noqa: D401
             raise RuntimeError("boom")
 
     dummy = FaultyAdapter()
