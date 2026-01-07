@@ -58,7 +58,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 import matplotlib
-from matplotlib import cm
 from matplotlib import colors as mcolors
 from matplotlib import font_manager
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
@@ -358,7 +357,6 @@ class DesktopDashboard(QMainWindow):
         self._poll_timer.start(2000)
         self._market_fetch_thread: Optional[threading.Thread] = None
         self._market_fetch_token = 0
-        self._market_timeout_timer: Optional[QTimer] = None
 
         self._init_ui()
         # 기본 테마를 다크 모드로 시작해 차트 축/선 색상이 바로 적용되도록 설정
@@ -680,7 +678,17 @@ class DesktopDashboard(QMainWindow):
         chart_palette = self._theme_palette().get("chart", {})
         chart_bg = chart_palette.get("bg", self._theme_palette().get("card"))
         fig.patch.set_facecolor(chart_bg)
-        self.ax = fig.add_subplot(111, facecolor=chart_bg)
+        grid = fig.add_gridspec(
+            nrows=5,
+            ncols=1,
+            height_ratios=[3.2, 1.0, 1.0, 1.0, 1.0],
+            hspace=0.08,
+        )
+        self.ax_price = fig.add_subplot(grid[0], facecolor=chart_bg)
+        self.ax_vol = fig.add_subplot(grid[1], sharex=self.ax_price, facecolor=chart_bg)
+        self.ax_osc = fig.add_subplot(grid[2], sharex=self.ax_price, facecolor=chart_bg)
+        self.ax_macd = fig.add_subplot(grid[3], sharex=self.ax_price, facecolor=chart_bg)
+        self.ax_misc = fig.add_subplot(grid[4], sharex=self.ax_price, facecolor=chart_bg)
         self.canvas = FigureCanvasQTAgg(fig)
         self.canvas.setStyleSheet(f"background-color: {chart_bg};")
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -811,16 +819,6 @@ class DesktopDashboard(QMainWindow):
         self._market_fetch_token += 1
         token = self._market_fetch_token
 
-        # 마켓 조회가 네트워크/DNS 문제로 지연될 수 있어 UI 레벨 타임아웃을 둔다.
-        timeout_ms = int(os.environ.get("MARKET_FETCH_TIMEOUT_MS", "15000"))
-        if self._market_timeout_timer:
-            self._market_timeout_timer.stop()
-        self._market_timeout_timer = QTimer(self)
-        self._market_timeout_timer.setSingleShot(True)
-        self._market_timeout_timer.timeout.connect(lambda: self._on_market_fetch_timeout(token))
-        self._market_timeout_timer.start(timeout_ms)
-        time_budget = max(timeout_ms / 1000.0 - 1.0, 3.0)
-
         def _fetch_markets() -> None:
             try:
                 # Upbit API 자체의 응답 속도보다 "초기 연결"이 지연되는 경우가 훨씬 많다.
@@ -830,7 +828,6 @@ class DesktopDashboard(QMainWindow):
                     is_fiat=True,
                     fiat_symbol="KRW",
                     top_by_volume=5,
-                    time_budget=time_budget,
                     adapter=UpbitAdapter(timeout=6, max_retries=1, backoff=0.4, trust_env=False, force_ipv4=True),
                 )
             except Exception as exc:  # pragma: no cover - 네트워크 예외 방어
@@ -844,7 +841,6 @@ class DesktopDashboard(QMainWindow):
     def _finish_market_fetch(self, markets: List[str], token: int) -> None:
         if token != self._market_fetch_token:
             return
-        self._clear_market_fetch_timer()
         self._market_fetch_thread = None
         self._start_with_markets(markets)
 
@@ -863,21 +859,9 @@ class DesktopDashboard(QMainWindow):
         self.status_label.setText(f"실행 중 | 모니터링 {len(markets)}개")
         self._add_timeline_event("거래 시작", severity="success")
 
-    def _on_market_fetch_timeout(self, token: int) -> None:
-        if token != self._market_fetch_token:
-            return
-        self._market_fetch_thread = None
-        self._handle_market_fetch_failure(TimeoutError("마켓 조회가 제한 시간 내 완료되지 않았습니다."), token)
-
-    def _clear_market_fetch_timer(self) -> None:
-        if self._market_timeout_timer:
-            self._market_timeout_timer.stop()
-            self._market_timeout_timer = None
-
     def _handle_market_fetch_failure(self, exc: Exception, token: Optional[int] = None) -> None:
         if token is not None and token != self._market_fetch_token:
             return
-        self._clear_market_fetch_timer()
         self._market_fetch_thread = None
         self._show_banner(f"마켓 조회 실패: {exc}", success=False, severity="error")
         self.start_btn.setEnabled(True)
@@ -968,8 +952,10 @@ class DesktopDashboard(QMainWindow):
         self.equity_history.append(snapshot.total_value)
         self._refresh_equity_curve()
         self._update_status_badges(snapshot)
-
+    
     def _refresh_chart(self) -> None:
+        if not hasattr(self, "ax_price"):
+            return
         market = self.chart_selector.currentText()
         palette = self._theme_palette()
         chart_palette = palette.get(
@@ -1051,14 +1037,35 @@ class DesktopDashboard(QMainWindow):
 
         if "ema9" in enabled:
             ema9 = technical.ema(closes, 9)
-            self.ax_price.plot(x[-len(ema9):], ema9, color=chart_palette.get("ema_fast", "#22d3ee"), linewidth=1.0, alpha=0.85, label="EMA9")
+            self.ax_price.plot(
+                x[-len(ema9):],
+                ema9,
+                color=chart_palette.get("ema_fast", "#22d3ee"),
+                linewidth=1.0,
+                alpha=0.85,
+                label="EMA9",
+            )
         if "ema21" in enabled:
             ema21 = technical.ema(closes, 21)
-            self.ax_price.plot(x[-len(ema21):], ema21, color=chart_palette.get("ema_slow", "#a855f7"), linewidth=1.0, alpha=0.85, label="EMA21")
+            self.ax_price.plot(
+                x[-len(ema21):],
+                ema21,
+                color=chart_palette.get("ema_slow", "#a855f7"),
+                linewidth=1.0,
+                alpha=0.85,
+                label="EMA21",
+            )
         if "ema200" in enabled and len(closes) >= 200:
             ema200 = technical.ema(frame["close"].astype(float), 200)
             ema200 = ema200.iloc[-len(closes):]
-            self.ax_price.plot(x[-len(ema200):], ema200, color=chart_palette.get("ema_long", "#f97316"), linewidth=1.8, alpha=0.8, label="EMA200")
+            self.ax_price.plot(
+                x[-len(ema200):],
+                ema200,
+                color=chart_palette.get("ema_long", "#f97316"),
+                linewidth=1.8,
+                alpha=0.8,
+                label="EMA200",
+            )
 
         if "bb" in enabled and len(closes) >= 20:
             bb = technical.bollinger_bands(closes, window=20, num_std=2.0)
@@ -1083,7 +1090,11 @@ class DesktopDashboard(QMainWindow):
 
         # Supertrend 3 levels
         if any(k in enabled for k in ("st_weak", "st_medium", "st_strong")):
-            st_levels = [("weak", 7, 2.0, "st_weak"), ("medium", 10, 3.0, "st_medium"), ("strong", 14, 4.0, "st_strong")]
+            st_levels = [
+                ("weak", 7, 2.0, "st_weak"),
+                ("medium", 10, 3.0, "st_medium"),
+                ("strong", 14, 4.0, "st_strong"),
+            ]
             for name, period, mult, key in st_levels:
                 if key not in enabled:
                     continue
@@ -1091,7 +1102,13 @@ class DesktopDashboard(QMainWindow):
                 series = st_df["supertrend"].iloc[-len(closes):]
                 if series.empty:
                     continue
-                self.ax_price.plot(x[-len(series):], series, linewidth=1.2, alpha=0.85, label=f"Supertrend {name}")
+                self.ax_price.plot(
+                    x[-len(series):],
+                    series,
+                    linewidth=1.2,
+                    alpha=0.85,
+                    label=f"Supertrend {name}",
+                )
 
         # Trade markers (price axis)
         trades = (self.state_store_reader.load_recent_trades(limit=80) if self.state_store_reader else [])
@@ -1261,7 +1278,7 @@ class DesktopDashboard(QMainWindow):
         self.heatmap_ax.clear()
         self.heatmap_ax.set_facecolor(bg_color)
         cmap_name = chart_palette.get("heatmap_cmap", "magma")
-        cmap = cm.get_cmap(cmap_name)
+        cmap = matplotlib.colormaps.get_cmap(cmap_name)
         vmin, vmax = float(matrix.min()), float(matrix.max())
         if vmax == vmin:
             vmax = vmin + 1e-6
