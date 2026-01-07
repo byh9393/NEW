@@ -66,7 +66,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 
 from upbit_bot.app import DecisionUpdate, TradingBot
-from upbit_bot.data.market_fetcher import fetch_markets
+from upbit_bot.data.market_fetcher import ScalpFilterConfig, fetch_markets
 from upbit_bot.data.upbit_adapter import UpbitAdapter
 from upbit_bot.indicators import technical
 from upbit_bot.storage import SQLiteStateStore
@@ -827,7 +827,13 @@ class DesktopDashboard(QMainWindow):
                 markets_result = fetch_markets(
                     is_fiat=True,
                     fiat_symbol="KRW",
-                    top_by_volume=5,
+                    top_by_volume=40,
+                    scalp_filter=ScalpFilterConfig(
+                        unit=5,
+                        candle_count=120,
+                        min_abs_score=30.0,
+                        top_n=12,
+                    ),
                     adapter=UpbitAdapter(timeout=6, max_retries=1, backoff=0.4, trust_env=False, force_ipv4=True),
                 )
             except Exception as exc:  # pragma: no cover - 네트워크 예외 방어

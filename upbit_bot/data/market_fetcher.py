@@ -15,9 +15,21 @@ import json
 import logging
 import time
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple
 
+import numpy as np
+import pandas as pd
+
 from upbit_bot.data.upbit_adapter import UpbitAdapter
+from upbit_bot.indicators.technical import (
+    atr_like,
+    ema,
+    macd,
+    percent_b,
+    rate_of_change,
+    rsi,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +98,109 @@ def _fetch_24h_volumes(
     return volumes
 
 
+@dataclass
+class ScalpFilterConfig:
+    """단타 매매 후보를 추리기 위한 필터 구성값."""
+
+    unit: int = 5
+    candle_count: int = 120
+    min_abs_score: float = 30.0
+    top_n: int = 12
+
+
+def _candles_to_series(candles: Sequence[dict]) -> pd.Series:
+    prices = [float(candle.get("trade_price", 0.0) or 0.0) for candle in reversed(candles)]
+    return pd.Series(prices, dtype=float)
+
+
+def _scalp_score(prices: pd.Series) -> float:
+    """단타 진입/청산 탐지용 지표 스코어를 계산한다."""
+    if prices.size < 30:
+        return 0.0
+
+    last_price = float(prices.iloc[-1])
+    ema_fast = float(ema(prices, 9).iloc[-1])
+    ema_slow = float(ema(prices, 21).iloc[-1])
+    rsi_val = float(rsi(prices, 14).iloc[-1])
+    macd_hist = float(macd(prices)["hist"].iloc[-1])
+    percent_b_val = float(percent_b(prices, 20).iloc[-1])
+    roc_val = float(rate_of_change(prices, 5).iloc[-1])
+    atr_val = float(atr_like(prices, 14).iloc[-1])
+
+    score = 0.0
+    score += 15.0 if ema_fast > ema_slow else -15.0
+    score += float(np.tanh(macd_hist / (prices.std() + 1e-6)) * 20)
+
+    if rsi_val < 35:
+        score += 20.0
+    elif rsi_val > 65:
+        score -= 20.0
+
+    if percent_b_val < 0.2:
+        score += 15.0
+    elif percent_b_val > 0.8:
+        score -= 15.0
+
+    if roc_val > 0.6:
+        score += 10.0
+    elif roc_val < -0.6:
+        score -= 10.0
+
+    if last_price > 0:
+        volatility_ratio = atr_val / last_price
+        if volatility_ratio < 0.001:
+            score *= 0.6
+        elif volatility_ratio > 0.02:
+            score *= 0.8
+
+    return float(np.clip(score, -100, 100))
+
+
+def _filter_by_scalp_signals(
+    markets: Sequence[str],
+    adapter: UpbitAdapter,
+    *,
+    config: ScalpFilterConfig,
+    deadline: float | None = None,
+) -> List[str]:
+    scored: List[Tuple[str, float]] = []
+    for market in markets:
+        if deadline and time.monotonic() >= deadline:
+            logger.warning("단타 지표 필터 시간이 초과되어 일부 종목만 적용합니다.")
+            break
+        try:
+            candles = adapter.candles(
+                market=market,
+                kind="minutes",
+                unit=config.unit,
+                count=config.candle_count,
+                deadline=deadline,
+            )
+        except Exception:
+            logger.exception("단타 캔들 조회 실패: %s", market)
+            continue
+        if not candles:
+            continue
+        prices = _candles_to_series(candles)
+        score = _scalp_score(prices)
+        if abs(score) >= config.min_abs_score:
+            scored.append((market, score))
+
+    if not scored:
+        return []
+
+    scored_sorted = sorted(scored, key=lambda item: abs(item[1]), reverse=True)
+    if config.top_n > 0:
+        scored_sorted = scored_sorted[: config.top_n]
+    return [market for market, _ in scored_sorted]
+
+
 def fetch_markets(
     *,
     is_fiat: bool = True,
     fiat_symbol: str = "KRW",
     top_by_volume: int | None = None,
+    scalp_filter: ScalpFilterConfig | None = None,
     time_budget: float | None = None,
     adapter: UpbitAdapter | None = None,
     cache_path: str | Path | None = None,
@@ -154,4 +264,18 @@ def fetch_markets(
     # 네트워크로 성공적으로 받아온 경우 캐시에 저장
     _save_cache(cache_file, markets=list(base_markets), volumes=volumes)
 
+    if scalp_filter is None:
+        return selected
+
+    scalp_markets = _filter_by_scalp_signals(
+        selected,
+        client,
+        config=scalp_filter,
+        deadline=deadline,
+    )
+    if scalp_markets:
+        logger.info("단타 지표 필터 적용: %d개 종목 선정", len(scalp_markets))
+        return scalp_markets
+
+    logger.warning("단타 지표 필터에서 종목을 찾지 못해 원본 목록을 사용합니다.")
     return selected
